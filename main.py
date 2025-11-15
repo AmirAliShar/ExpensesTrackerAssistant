@@ -1,10 +1,8 @@
 from fastapi import FastAPI
-
 from fastapi.responses import JSONResponse
-
-from agent import run_agent
-
 from Schema import QueryRequest
+from agent import run_agent
+import asyncio
 
 app = FastAPI(
     title="AI Expense Tracker Agent API",
@@ -14,11 +12,5 @@ app = FastAPI(
 
 @app.post("/agent/query")
 async def handle_query(request: QueryRequest):
-    """POST endpoint to run the AI agent"""
-    try:
-        agent_result = await run_agent(request)
-        return JSONResponse({"response": agent_result})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-    
-
+    response_text = await run_agent(request)
+    return JSONResponse({"response": response_text})
