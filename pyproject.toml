@@ -1,0 +1,17 @@
+[project]
+name = "buildableexp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.121.2",
+    "fastmcp>=2.13.0.2",
+    "langchain>=1.0.7",
+    "langchain-groq>=1.0.1",
+    "langchain-mcp-adapters>=0.1.13",
+    "psycopg2-binary>=2.9.11",
+    "sqlalchemy>=2.0.44",
+    "streamlit>=1.51.0",
+    "uvicorn[standard]>=0.38.0",
+]
