@@ -116,7 +116,7 @@ Edit `backend/.env` with your PostgreSQL credentials and Groq API key:
 DATABASE_URL=postgresql+psycopg2://postgres:YOUR_PASSWORD@localhost:5432/LangGraph
 PGHOST=localhost
 PGPORT=5432
-PGDATABASE=LangGraph
+PGDATABASE=DataBaseName
 PGUSER=postgres
 PGPASSWORD=YOUR_PASSWORD
 
