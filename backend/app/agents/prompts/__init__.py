@@ -1,0 +1,20 @@
+from app.agents.prompts.loader import get_prompt, get_all_prompts
+from app.agents.prompts.defaults import (
+    DEFAULT_FINANCE_SUPERVISOR_PROMPT,
+    DEFAULT_EXPENSE_AGENT_PROMPT,
+    DEFAULT_BUDGET_AGENT_PROMPT,
+    DEFAULT_ANALYTICS_AGENT_PROMPT,
+    DEFAULT_MEMORY_AGENT_PROMPT,
+    DEFAULT_VOICE_AGENT_PROMPT,
+)
+
+__all__ = [
+    "get_prompt",
+    "get_all_prompts",
+    "DEFAULT_FINANCE_SUPERVISOR_PROMPT",
+    "DEFAULT_EXPENSE_AGENT_PROMPT",
+    "DEFAULT_BUDGET_AGENT_PROMPT",
+    "DEFAULT_ANALYTICS_AGENT_PROMPT",
+    "DEFAULT_MEMORY_AGENT_PROMPT",
+    "DEFAULT_VOICE_AGENT_PROMPT",
+]
