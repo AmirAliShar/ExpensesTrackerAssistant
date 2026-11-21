@@ -15,8 +15,8 @@ interface Message {
 const WELCOME_MESSAGE: Message = {
   id: 'welcome',
   sender: 'assistant',
-  text: '👋 Hello! I am AI Expense Tracker — your Agentic Personal Finance Assistant.\n\nEquipped with **LangGraph PostgreSQL memory**, **multi-step confirmation workflows**, **Groq dynamic LLM fallback**, and **Whisper voice**.\n\nTry asking me:\n- *"Delete transaction #1"* (triggers safe human-in-the-loop confirmation)\n- *"Add Rs. 1,200 for dining and groceries today"*\n- *"What is my largest expense category this month?"*\n- *"Check my monthly budget status"* \n- *"Remember that my target savings rate is 25%"*',
-  spokenSummary: 'Hello! I am AI Expense Tracker, your agentic financial assistant.',
+  text: 'How can I help you with your finances today?',
+  spokenSummary: 'How can I help you with your finances today?',
   timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
 };
 
@@ -583,7 +583,7 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder={isRecording ? 'Listening... Speak your command now...' : 'Ask AI Expense Tracker or say "Delete transaction #1"...'}
+          placeholder={isRecording ? 'Listening... Speak your command now...' : 'How can I help you?'}
           style={{
             flex: 1,
             padding: '10px 14px',

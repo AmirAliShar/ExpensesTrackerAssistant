@@ -18,7 +18,7 @@ const EXPENSE_CATEGORIES = [
   'Fruit',
   'Friends',
   'Entertainment',
-  'Other',
+  'Miscellaneous Expense',
 ];
 
 const INCOME_CATEGORIES = [
@@ -28,7 +28,8 @@ const INCOME_CATEGORIES = [
   'Investment',
   'Bonus',
   'Gift',
-  'Other',
+  'Reimbursement',
+  'Miscellaneous Income',
 ];
 
 export const TransactionsPage: React.FC<TransactionsPageProps> = ({
@@ -38,7 +39,6 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
 }) => {
   const [filterCategory, setFilterCategory] = useState('All');
   const [filterType, setFilterType] = useState('all');
-  const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
 
@@ -53,6 +53,7 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
   const [formType, setFormType] = useState<'expense' | 'income'>('expense');
   const [formDescription, setFormDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isFixedTransactionType, setIsFixedTransactionType] = useState(false);
 
   // Close contextual menu on click outside
   useEffect(() => {
@@ -81,12 +82,12 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
   const filteredTransactions = transactions.filter((t) => {
     if (filterCategory !== 'All' && t.category.toLowerCase() !== filterCategory.toLowerCase()) return false;
     if (filterType !== 'all' && t.type !== filterType) return false;
-    if (search && !t.description?.toLowerCase().includes(search.toLowerCase()) && !t.category.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
   const handleOpenAdd = (type: 'expense' | 'income' = 'expense') => {
     setEditingTx(null);
+    setIsFixedTransactionType(true);
     setFormDate(new Date().toISOString().split('T')[0]);
     setFormType(type);
     setFormCategory(type === 'income' ? INCOME_CATEGORIES[0] : EXPENSE_CATEGORIES[0]);
@@ -97,6 +98,7 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
 
   const handleOpenEdit = (tx: Transaction) => {
     setEditingTx(tx);
+    setIsFixedTransactionType(false);
     setFormDate(tx.date);
     setFormCategory(tx.category);
     setFormAmount(String(tx.amount));
@@ -237,23 +239,6 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
         }}
       >
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', flex: 1 }}>
-          <input
-            type="text"
-            placeholder="Search description or category..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{
-              padding: '9px 14px',
-              borderRadius: '8px',
-              background: 'var(--bg-input)',
-              border: '1px solid var(--border-subtle)',
-              color: 'var(--text-main)',
-              fontSize: '0.85rem',
-              minWidth: 'min(100%, 220px)',
-              flex: '1 1 200px',
-            }}
-          />
-
           <select
             value={filterCategory}
             onChange={(e) => setFilterCategory(e.target.value)}
@@ -630,44 +615,64 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
                 <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
                   Transaction Type
                 </label>
-                <div style={{ display: 'flex', gap: '8px', background: 'var(--bg-hover-subtle)', padding: '4px', borderRadius: '10px' }}>
-                  <button
-                    type="button"
-                    onClick={() => handleTypeChange('expense')}
+                {isFixedTransactionType ? (
+                  <div
                     style={{
-                      flex: 1,
-                      padding: '8px',
+                      width: '100%',
+                      padding: '9px 14px',
                       borderRadius: '8px',
-                      border: 'none',
-                      background: formType === 'expense' ? 'var(--primary-blue)' : 'transparent',
-                      color: formType === 'expense' ? '#ffffff' : 'var(--text-muted)',
-                      fontWeight: 600,
+                      background: formType === 'income'
+                        ? 'var(--accent-emerald-subtle)'
+                        : 'var(--accent-rose-subtle)',
+                      color: formType === 'income'
+                        ? 'var(--accent-emerald)'
+                        : 'var(--accent-rose)',
+                      fontWeight: 700,
                       fontSize: '0.85rem',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
                     }}
                   >
-                    Expense
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleTypeChange('income')}
-                    style={{
-                      flex: 1,
-                      padding: '8px',
-                      borderRadius: '8px',
-                      border: 'none',
-                      background: formType === 'income' ? 'var(--primary-blue)' : 'transparent',
-                      color: formType === 'income' ? '#ffffff' : 'var(--text-muted)',
-                      fontWeight: 600,
-                      fontSize: '0.85rem',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                    }}
-                  >
-                    Income
-                  </button>
-                </div>
+                    {formType === 'income' ? 'Income' : 'Expense'}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px', background: 'var(--bg-hover-subtle)', padding: '4px', borderRadius: '10px' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleTypeChange('expense')}
+                      style={{
+                        flex: 1,
+                        padding: '8px',
+                        borderRadius: '8px',
+                        border: 'none',
+                        background: formType === 'expense' ? 'var(--primary-blue)' : 'transparent',
+                        color: formType === 'expense' ? '#ffffff' : 'var(--text-muted)',
+                        fontWeight: 600,
+                        fontSize: '0.85rem',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      Expense
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleTypeChange('income')}
+                      style={{
+                        flex: 1,
+                        padding: '8px',
+                        borderRadius: '8px',
+                        border: 'none',
+                        background: formType === 'income' ? 'var(--primary-blue)' : 'transparent',
+                        color: formType === 'income' ? '#ffffff' : 'var(--text-muted)',
+                        fontWeight: 600,
+                        fontSize: '0.85rem',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      Income
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Amount */}

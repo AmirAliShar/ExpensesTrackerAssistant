@@ -7,6 +7,9 @@ from sqlalchemy import String, cast, desc
 
 from app.database import engine, init_database, Transaction, ExpensiveTracker, UserMemory
 from app.agents.tools import record_transaction_db, save_memory_db
+from dotenv import load_dotenv
+import os
+load_dotenv()
 
 mcp = FastMCP(name="FinPilotMCP")
 Session = sessionmaker(bind=engine)
