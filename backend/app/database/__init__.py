@@ -11,6 +11,10 @@ from app.database.connection import (
     Budget,
     SavingsGoal,
     UserMemory,
+    Conversation,
+    ConversationMessage,
+    PersonalLoan,
+    LoanRepayment,
     ExpensiveTracker
 )
 
@@ -27,5 +31,9 @@ __all__ = [
     "Budget",
     "SavingsGoal",
     "UserMemory",
+    "Conversation",
+    "ConversationMessage",
+    "PersonalLoan",
+    "LoanRepayment",
     "ExpensiveTracker"
 ]

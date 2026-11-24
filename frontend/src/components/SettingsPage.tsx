@@ -19,6 +19,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [newMemory, setNewMemory] = useState('');
   const [memoryType, setMemoryType] = useState('preference');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [dailyBriefingEnabled, setDailyBriefingEnabled] = useState(
+    localStorage.getItem('daily_briefing_enabled') !== 'false'
+  );
 
   const handleAddMemory = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -96,6 +99,23 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               <option value="AED">AED (Dirham)</option>
               <option value="SAR">SAR (Riyal)</option>
             </select>
+          </div>
+          <div>
+            <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+              Daily Financial Briefing
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                const enabled = !dailyBriefingEnabled;
+                setDailyBriefingEnabled(enabled);
+                localStorage.setItem('daily_briefing_enabled', String(enabled));
+              }}
+              className="btn-secondary"
+              style={{ minHeight: '42px', fontSize: '0.82rem' }}
+            >
+              {dailyBriefingEnabled ? 'Enabled — Disable' : 'Disabled — Enable'}
+            </button>
           </div>
         </div>
       </div>

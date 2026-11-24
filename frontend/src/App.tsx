@@ -7,7 +7,8 @@ import {
   Budget,
   SavingsGoal,
   Memory,
-  AuthResponse
+  AuthResponse,
+  DailyBriefing
 } from './api';
 import { ExpensePieChart } from './components/ExpensePieChart';
 import { AIAssistant } from './components/AIAssistant';
@@ -15,11 +16,13 @@ import { TransactionsPage } from './components/TransactionsPage';
 import { BudgetsPage } from './components/BudgetsPage';
 import { SettingsPage } from './components/SettingsPage';
 import { AuthModal } from './components/AuthModal';
+import { PeopleLoansPage } from './components/PeopleLoansPage';
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'assistant' | 'budgets' | 'settings'>('dashboard');
+  const [oauthError, setOauthError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'assistant' | 'budgets' | 'loans' | 'settings'>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Theme state with localStorage persistence and system theme detection
@@ -38,6 +41,7 @@ export function App() {
   const [currency, setCurrency] = useState('PKR');
   const [selectedMonth, setSelectedMonth] = useState('');
   const [loading, setLoading] = useState(false);
+  const [dailyBriefing, setDailyBriefing] = useState<DailyBriefing | null>(null);
 
   // Apply theme to document root whenever it changes
   useEffect(() => {
@@ -84,12 +88,13 @@ export function App() {
   const loadAllData = async (monthFilter = selectedMonth) => {
     setLoading(true);
     try {
-      const [analyticsData, txData, budgetData, goalsData, memData] = await Promise.allSettled([
+      const [analyticsData, txData, budgetData, goalsData, memData, briefingData] = await Promise.allSettled([
         api.getAnalytics({ month: monthFilter || undefined }),
         api.getTransactions({ month: monthFilter || undefined, limit: 100 }),
         api.getBudgets(monthFilter || undefined),
         api.getGoals(),
         api.getMemories(),
+        api.getDailyBriefing(),
       ]);
 
       if (analyticsData.status === 'fulfilled') setAnalytics(analyticsData.value);
@@ -97,6 +102,7 @@ export function App() {
       if (budgetData.status === 'fulfilled') setBudgets(budgetData.value);
       if (goalsData.status === 'fulfilled') setGoals(goalsData.value);
       if (memData.status === 'fulfilled') setMemories(memData.value);
+      if (briefingData.status === 'fulfilled') setDailyBriefing(briefingData.value);
     } catch (e) {
       console.error('Error fetching data:', e);
     } finally {
@@ -111,6 +117,18 @@ export function App() {
 
   // Load user session on mount
   useEffect(() => {
+    const oauthParams = new URLSearchParams(window.location.hash.slice(1));
+    const oauthToken = oauthParams.get('oauth_token');
+    const callbackError = oauthParams.get('oauth_error');
+    if (oauthToken) {
+      api.setToken(oauthToken);
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    } else if (callbackError) {
+      setOauthError(callbackError);
+      setShowAuthModal(true);
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    }
+
     const token = api.getToken();
     if (token) {
       api.getMe()
@@ -130,6 +148,7 @@ export function App() {
   }, []);
 
   const handleAuthSuccess = (data: AuthResponse) => {
+    setOauthError(null);
     setUser(data.user);
     setCurrency(data.user.preferred_currency || 'PKR');
     setShowAuthModal(false);
@@ -153,6 +172,7 @@ export function App() {
     { id: 'transactions', label: 'Transactions', icon: '💳' },
     { id: 'assistant', label: 'AI Assistant', icon: '⚡' },
     { id: 'budgets', label: 'Budgets & Goals', icon: '🎯' },
+    { id: 'loans', label: 'People & Loans', icon: '🤝' },
     { id: 'settings', label: 'Settings', icon: '⚙️' },
   ];
 
@@ -450,6 +470,32 @@ export function App() {
               </div>
             </div>
 
+            {dailyBriefing && localStorage.getItem('daily_briefing_enabled') !== 'false' && (
+              <div className="glass-card" style={{ padding: 'clamp(16px, 3vw, 20px)', borderLeft: '4px solid var(--primary-blue)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--accent-blue-text)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Daily Financial Briefing
+                    </div>
+                    <h3 style={{ marginTop: '4px', fontSize: '1.05rem' }}>Good morning</h3>
+                  </div>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>{dailyBriefing.date}</span>
+                </div>
+                <p style={{ marginTop: '10px', color: 'var(--text-secondary)', lineHeight: 1.6, fontSize: '0.86rem' }}>
+                  {dailyBriefing.summary}
+                </p>
+                {dailyBriefing.budget_alerts.length > 0 && (
+                  <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {dailyBriefing.budget_alerts.slice(0, 3).map((alert) => (
+                      <span key={alert} style={{ fontSize: '0.75rem', color: 'var(--accent-amber)', background: 'var(--accent-amber-subtle)', borderRadius: '7px', padding: '5px 9px' }}>
+                        {alert}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* 4 Summary Stat Metric Cards */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: '16px' }}>
               <div className="glass-card" style={{ padding: '20px' }}>
@@ -623,7 +669,9 @@ export function App() {
           />
         )}
 
-        {/* TAB 5: SETTINGS & LONG-TERM MEMORY */}
+        {activeTab === 'loans' && <PeopleLoansPage currency={currency} />}
+
+        {/* TAB 6: SETTINGS & LONG-TERM MEMORY */}
         {activeTab === 'settings' && (
           <SettingsPage
             memories={memories}
@@ -637,7 +685,7 @@ export function App() {
 
       {/* Auth Modal */}
       {showAuthModal && (
-        <AuthModal onSuccess={handleAuthSuccess} />
+        <AuthModal onSuccess={handleAuthSuccess} oauthError={oauthError} />
       )}
     </div>
   );

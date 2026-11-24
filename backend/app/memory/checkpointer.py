@@ -72,3 +72,32 @@ def get_graph_checkpointer():
     except Exception as e:
         logger.error(f"[Checkpointer] Could not initialize MemorySaver: {e}")
         return None
+
+
+def clear_pending_action(scoped_thread_id: str) -> bool:
+    """Clear a completed confirmation from persistent conversation state."""
+    checkpointer = get_graph_checkpointer()
+    if not checkpointer:
+        return False
+    try:
+        config = {"configurable": {"thread_id": scoped_thread_id}}
+        current = checkpointer.get(config)
+        if not current or "channel_values" not in current:
+            return True
+        values = dict(current["channel_values"])
+        values["pending_action"] = None
+        from langgraph.checkpoint.base import empty_checkpoint
+
+        checkpoint = empty_checkpoint()
+        checkpoint["channel_values"] = values
+        metadata = {
+            "source": "confirmation",
+            "step": len(values.get("messages", [])),
+            "writes": {"channel_values": values},
+            "parents": {},
+        }
+        checkpointer.put(config, checkpoint, metadata, {})
+        return True
+    except Exception:
+        logger.exception("Could not clear completed confirmation for thread %s", scoped_thread_id)
+        return False

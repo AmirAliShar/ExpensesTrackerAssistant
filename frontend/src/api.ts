@@ -109,6 +109,74 @@ export interface AgentHistoryResponse {
   pending_confirmation?: PendingConfirmation | null;
 }
 
+export interface Conversation {
+  id: number;
+  thread_id: string;
+  title: string;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DailyBriefingGoal {
+  title: string;
+  target_amount: number;
+  current_amount: number;
+  progress_percentage: number;
+}
+
+export interface DailyBriefing {
+  date: string;
+  yesterday: string;
+  yesterday_spending: number;
+  month: string;
+  monthly_spending: number;
+  remaining_monthly_budget?: number;
+  budget_alerts: string[];
+  savings_goals: DailyBriefingGoal[];
+  summary: string;
+}
+
+export type MoneyAmount = number | string;
+
+export interface PersonalLoan {
+  id: number;
+  user_id: number;
+  person_name: string;
+  loan_type: 'lent' | 'borrowed';
+  original_amount: MoneyAmount;
+  outstanding_amount: MoneyAmount;
+  transaction_date: string;
+  due_date?: string | null;
+  description?: string | null;
+  status: 'active' | 'partially_paid' | 'settled';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LoanRepayment {
+  id: number;
+  loan_id: number;
+  amount: MoneyAmount;
+  repayment_date: string;
+  description?: string | null;
+  created_at: string;
+}
+
+export interface LoanHistory {
+  loan: PersonalLoan;
+  repayments: LoanRepayment[];
+}
+
+export interface LoanSummary {
+  total_lent: MoneyAmount;
+  total_borrowed: MoneyAmount;
+  outstanding_receivables: MoneyAmount;
+  outstanding_liabilities: MoneyAmount;
+  active_count: number;
+  settled_count: number;
+}
+
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
 
 class ApiClient {
@@ -129,6 +197,10 @@ class ApiClient {
 
   getToken(): string | null {
     return this.token;
+  }
+
+  getGoogleAuthUrl(): string {
+    return `${API_BASE}/api/auth/google/start`;
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -275,10 +347,66 @@ class ApiClient {
     return this.request<void>('/api/memories', { method: 'DELETE' });
   }
 
+  // --- Personal Lending & Borrowing API ---
+  async getLoanSummary(): Promise<LoanSummary> {
+    return this.request<LoanSummary>('/api/loans/summary');
+  }
+
+  async getLoans(params: {
+    loan_type?: 'lent' | 'borrowed';
+    status?: 'active' | 'partially_paid' | 'settled';
+    person_name?: string;
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<PersonalLoan[]> {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.append(key, String(value));
+    });
+    return this.request<PersonalLoan[]>(`/api/loans?${query.toString()}`);
+  }
+
+  async createLoan(loan: {
+    person_name: string;
+    loan_type: 'lent' | 'borrowed';
+    original_amount: string;
+    transaction_date: string;
+    due_date?: string;
+    description?: string;
+  }): Promise<PersonalLoan> {
+    return this.request<PersonalLoan>('/api/loans', {
+      method: 'POST',
+      body: JSON.stringify({ ...loan, confirmed: true }),
+    });
+  }
+
+  async getLoanHistory(id: number): Promise<LoanHistory> {
+    return this.request<LoanHistory>(`/api/loans/${id}/history`);
+  }
+
+  async recordLoanRepayment(
+    id: number,
+    repayment: {
+      amount: string;
+      repayment_date: string;
+      description?: string;
+      idempotency_key: string;
+    },
+  ): Promise<{ loan: PersonalLoan; repayment: LoanRepayment; created: boolean }> {
+    return this.request(`/api/loans/${id}/repayments`, {
+      method: 'POST',
+      body: JSON.stringify({ ...repayment, confirmed: true }),
+    });
+  }
+
   // --- Reports & Exports API ---
   async getMonthlyReport(month?: string): Promise<any> {
     const query = month ? `?month=${month}` : '';
     return this.request<any>(`/api/reports/monthly${query}`);
+  }
+
+  async getDailyBriefing(): Promise<DailyBriefing> {
+    return this.request<DailyBriefing>('/api/briefings/daily');
   }
 
   getCsvExportUrl(month?: string): string {
@@ -294,6 +422,51 @@ class ApiClient {
     });
   }
 
+  async queryAgentStream(
+    query: string,
+    threadId: string,
+    onChunk: (text: string) => void,
+  ): Promise<AgentResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const response = await fetch(`${API_BASE}/api/agent/query/stream`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query, thread_id: threadId }),
+    });
+    if (!response.ok) throw new Error(`Streaming HTTP Error ${response.status}`);
+    if (!response.body) throw new Error('Streaming response unavailable');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResponse: AgentResponse | null = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === 'chunk') onChunk(event.text);
+        if (event.type === 'done') {
+          finalResponse = {
+            response: '',
+            thread_id: event.thread_id,
+            executed_tools: event.executed_tools || [],
+            memories_used: event.memories_used || [],
+            pending_confirmation: event.pending_confirmation || null,
+            spoken_summary: undefined,
+          };
+        }
+      }
+    }
+    if (!finalResponse) throw new Error('Stream ended without a final response');
+    return finalResponse;
+  }
+
   async getAgentHistory(thread_id?: string): Promise<AgentHistoryResponse> {
     const query = thread_id ? `?thread_id=${encodeURIComponent(thread_id)}` : '';
     return this.request<AgentHistoryResponse>(`/api/agent/history${query}`);
@@ -306,10 +479,37 @@ class ApiClient {
     });
   }
 
-  async confirmAction(action_token: string, confirmed = true): Promise<any> {
+  async getConversations(search = '', includeArchived = false): Promise<Conversation[]> {
+    const params = new URLSearchParams();
+    if (search) params.append('search', search);
+    if (includeArchived) params.append('include_archived', 'true');
+    return this.request<Conversation[]>(`/api/conversations?${params.toString()}`);
+  }
+
+  async createConversation(threadId: string, title = 'New conversation'): Promise<Conversation> {
+    return this.request<Conversation>('/api/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ thread_id: threadId, title }),
+    });
+  }
+
+  async updateConversation(id: number, update: { title?: string; archived?: boolean }): Promise<Conversation> {
+    return this.request<Conversation>(`/api/conversations/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(update),
+    });
+  }
+
+  async deleteConversation(id: number): Promise<{ status: string; message: string }> {
+    return this.request<{ status: string; message: string }>(`/api/conversations/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async confirmAction(action_token: string, confirmed = true, thread_id?: string): Promise<any> {
     return this.request('/api/agent/confirm', {
       method: 'POST',
-      body: JSON.stringify({ action_token, confirmed }),
+      body: JSON.stringify({ action_token, confirmed, thread_id }),
     });
   }
 

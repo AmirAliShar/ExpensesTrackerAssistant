@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { api, AgentResponse, PendingConfirmation } from '../api';
+import ReactMarkdown from 'react-markdown';
+import { api, AgentResponse, PendingConfirmation, Conversation } from '../api';
 
 interface Message {
   id: string;
@@ -33,6 +34,10 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [recognitionError, setRecognitionError] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationSearch, setConversationSearch] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [lastUserQuery, setLastUserQuery] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -42,6 +47,23 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
   useEffect(() => {
     localStorage.setItem('finpilot_chat_thread_id', threadId);
   }, [threadId]);
+
+  const refreshConversations = async (search = conversationSearch) => {
+    try {
+      setConversations(await api.getConversations(search));
+    } catch (err) {
+      console.warn('Could not load conversations:', err);
+    }
+  };
+
+  useEffect(() => {
+    refreshConversations();
+  }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => refreshConversations(conversationSearch), 250);
+    return () => window.clearTimeout(timeout);
+  }, [conversationSearch]);
 
   // Restore conversation history from PostgreSQL checkpointer on mount or thread change
   useEffect(() => {
@@ -151,17 +173,46 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
   };
 
   const handleNewChat = async () => {
-    try {
-      await api.clearAgentHistory(threadId);
-    } catch {}
     const newSessionId = `session_${Date.now()}`;
+    try {
+      await api.createConversation(newSessionId);
+    } catch {}
+    await refreshConversations();
     setThreadId(newSessionId);
     setMessages([WELCOME_MESSAGE]);
+  };
+
+  const selectConversation = (conversation: Conversation) => {
+    setThreadId(conversation.thread_id);
+  };
+
+  const renameConversation = async (conversation: Conversation) => {
+    const title = window.prompt('Rename conversation', conversation.title);
+    if (!title?.trim()) return;
+    await api.updateConversation(conversation.id, { title: title.trim() });
+    await refreshConversations();
+  };
+
+  const archiveConversation = async (conversation: Conversation) => {
+    await api.updateConversation(conversation.id, { archived: true });
+    await refreshConversations();
+  };
+
+  const deleteConversation = async (conversation: Conversation) => {
+    if (!window.confirm(`Delete "${conversation.title}"? Financial records will not be deleted.`)) return;
+    await api.deleteConversation(conversation.id);
+    if (threadId === conversation.thread_id) {
+      const newSessionId = `session_${Date.now()}`;
+      setThreadId(newSessionId);
+      setMessages([WELCOME_MESSAGE]);
+    }
+    await refreshConversations();
   };
 
   const handleSend = async (queryText?: string) => {
     const textToSend = (queryText || input).trim();
     if (!textToSend || loading) return;
+    setLastUserQuery(textToSend);
 
     setInput('');
     const userMsg: Message = {
@@ -174,12 +225,29 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
 
-    try {
-      const response: AgentResponse = await api.queryAgent(textToSend, threadId, voiceEnabled);
-      const assistantMsg: Message = {
-        id: (Date.now() + 1).toString(),
+    const streamingMessageId = (Date.now() + 1).toString();
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: streamingMessageId,
         sender: 'assistant',
-        text: response.response,
+        text: '',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      },
+    ]);
+
+    try {
+      let streamedText = '';
+      const response: AgentResponse = await api.queryAgentStream(textToSend, threadId, (chunk) => {
+        streamedText += chunk;
+        setMessages((prev) => prev.map((message) =>
+          message.id === streamingMessageId ? { ...message, text: streamedText } : message
+        ));
+      });
+      const assistantMsg: Message = {
+        id: streamingMessageId,
+        sender: 'assistant',
+        text: streamedText || response.response,
         spokenSummary: response.spoken_summary,
         toolsUsed: response.executed_tools,
         memoriesUsed: response.memories_used,
@@ -187,7 +255,7 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
 
-      setMessages((prev) => [...prev, assistantMsg]);
+      setMessages((prev) => prev.map((message) => message.id === streamingMessageId ? assistantMsg : message));
 
       if (voiceEnabled && response.spoken_summary) {
         speakText(response.spoken_summary);
@@ -197,13 +265,27 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
         onDataChanged();
       }
     } catch (err: any) {
+      try {
+        const fallback: AgentResponse = await api.queryAgent(textToSend, threadId, voiceEnabled);
+        setMessages((prev) => prev.map((message) => message.id === streamingMessageId ? {
+          id: streamingMessageId,
+          sender: 'assistant',
+          text: fallback.response,
+          spokenSummary: fallback.spoken_summary,
+          toolsUsed: fallback.executed_tools,
+          memoriesUsed: fallback.memories_used,
+          pendingConfirmation: fallback.pending_confirmation,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        } : message));
+      } catch (fallbackError: any) {
       const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
         sender: 'assistant',
-        text: `⚠️ Execution Notice: ${err.message || 'Server error'}. Please verify backend connection.`,
+        text: `⚠️ Execution Notice: ${(fallbackError as any).message || err.message || 'Server error'}. Please verify backend connection.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((prev) => prev.map((message) => message.id === streamingMessageId ? errorMsg : message));
+      }
     } finally {
       setLoading(false);
     }
@@ -212,7 +294,7 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
   const handleConfirmationAction = async (msgId: string, actionToken: string, confirmed: boolean) => {
     setLoading(true);
     try {
-      const res = await api.confirmAction(actionToken, confirmed);
+      const res = await api.confirmAction(actionToken, confirmed, threadId);
       // Remove or update pending confirmation on the message
       setMessages((prev) =>
         prev.map((m) =>
@@ -244,28 +326,50 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
   };
 
   const samplePrompts = [
-    'Delete transaction #1',
-    'Add Rs. 650 for coffee and snacks today',
-    'Received freelance payment Rs. 45,000',
-    'What is my available balance and savings rate?',
-    'Show my monthly budget status and alerts',
-    'Remember that I prefer saving 25% of my monthly salary',
+    'Help me add a new expense',
+    'Help me add new income',
+    'Show my recent transactions',
+    'Analyze my spending this month',
+    'Create a monthly budget',
+    'Create a savings goal',
   ];
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: 'min(720px, calc(100vh - 130px))',
-        minHeight: '460px',
-        background: 'var(--bg-card)',
-        borderRadius: '16px',
-        border: '1px solid var(--border-subtle)',
-        overflow: 'hidden',
-        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
-      }}
-    >
+    <div style={{ display: 'flex', height: 'min(720px, calc(100vh - 130px))', minHeight: '460px', background: 'var(--bg-card)', borderRadius: '16px', border: '1px solid var(--border-subtle)', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)' }}>
+      {sidebarOpen && (
+        <aside style={{ width: '250px', flexShrink: 0, borderRight: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ padding: '12px' }}>
+            <button className="btn-primary" onClick={handleNewChat} style={{ width: '100%' }}>＋ New Chat</button>
+            <input
+              value={conversationSearch}
+              onChange={(e) => setConversationSearch(e.target.value)}
+              placeholder="Search conversations"
+              style={{ width: '100%', marginTop: '10px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-input)', color: 'var(--text-main)' }}
+            />
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 12px' }}>
+            {conversations.map((conversation) => (
+              <div
+                key={conversation.id}
+                onClick={() => selectConversation(conversation)}
+                style={{ cursor: 'pointer', borderRadius: '9px', padding: '9px 10px', marginBottom: '4px', background: threadId === conversation.thread_id ? 'var(--accent-blue-subtle)' : 'transparent', border: threadId === conversation.thread_id ? '1px solid var(--border-focus)' : '1px solid transparent' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.82rem', fontWeight: 600 }}>{conversation.title}</span>
+                  <div style={{ display: 'flex', gap: '2px' }}>
+                    <button onClick={(e) => { e.stopPropagation(); renameConversation(conversation); }} title="Rename" style={{ border: 'none', background: 'none', cursor: 'pointer' }}>✎</button>
+                    <button onClick={(e) => { e.stopPropagation(); archiveConversation(conversation); }} title="Archive" style={{ border: 'none', background: 'none', cursor: 'pointer' }}>⌄</button>
+                    <button onClick={(e) => { e.stopPropagation(); deleteConversation(conversation); }} title="Delete" style={{ border: 'none', background: 'none', cursor: 'pointer' }}>×</button>
+                  </div>
+                </div>
+                <div style={{ color: 'var(--text-dim)', fontSize: '0.68rem', marginTop: '3px' }}>{new Date(conversation.updated_at).toLocaleDateString()}</div>
+              </div>
+            ))}
+            {conversations.length === 0 && <div style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.78rem' }}>No conversations yet.</div>}
+          </div>
+        </aside>
+      )}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <div
         style={{
@@ -308,6 +412,14 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
 
         {/* Action Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => setSidebarOpen((open) => !open)}
+            className="btn-secondary"
+            style={{ padding: '6px 10px', minHeight: '36px' }}
+            title={sidebarOpen ? 'Collapse conversations' : 'Expand conversations'}
+          >
+            {sidebarOpen ? '‹' : '›'}
+          </button>
           <button
             onClick={handleNewChat}
             className="btn-secondary"
@@ -398,7 +510,9 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
                 overflowWrap: 'anywhere',
               }}
             >
-              <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.55', fontSize: '0.9rem' }}>{m.text}</div>
+              <div style={{ lineHeight: '1.55', fontSize: '0.9rem' }}>
+                <ReactMarkdown>{m.text}</ReactMarkdown>
+              </div>
 
               {/* Interactive Human-in-the-Loop Confirmation Card */}
               {m.pendingConfirmation && (
@@ -482,14 +596,35 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
                 <span style={{ fontSize: '0.7rem', color: m.sender === 'user' ? '#c7d2fe' : '#64748b' }}>{m.timestamp}</span>
-                {m.sender === 'assistant' && m.spokenSummary && (
-                  <button
-                    onClick={() => speakText(m.spokenSummary!)}
-                    style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '0.85rem', padding: '2px 6px' }}
-                    title="Read summary aloud"
-                  >
-                    🔊
-                  </button>
+                {m.sender === 'assistant' && (
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <button
+                      onClick={() => navigator.clipboard?.writeText(m.text)}
+                      style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '0.78rem', padding: '2px 6px' }}
+                      title="Copy response"
+                    >
+                      Copy
+                    </button>
+                    {lastUserQuery && (
+                      <button
+                        onClick={() => handleSend(lastUserQuery)}
+                        disabled={loading}
+                        style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '0.78rem', padding: '2px 6px' }}
+                        title="Regenerate response"
+                      >
+                        Retry
+                      </button>
+                    )}
+                    {m.spokenSummary && (
+                      <button
+                        onClick={() => speakText(m.spokenSummary!)}
+                        style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '0.85rem', padding: '2px 6px' }}
+                        title="Read summary aloud"
+                      >
+                        🔊
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -612,6 +747,7 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
           {recognitionError}
         </div>
       )}
+      </div>
     </div>
   );
 };

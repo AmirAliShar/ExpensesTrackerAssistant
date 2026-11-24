@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
-from typing import Optional, List, Union, Any, Dict
+from typing import Optional, List, Union, Any, Dict, Literal
 from datetime import datetime, date as date_type
 from decimal import Decimal
 
@@ -204,6 +204,7 @@ class AgentResponse(BaseModel):
 class ConfirmationActionRequest(BaseModel):
     action_token: str
     confirmed: bool = True
+    thread_id: Optional[str] = None
 
 class ConfirmationActionResponse(BaseModel):
     success: bool
@@ -228,3 +229,108 @@ class AgentHistoryResponse(BaseModel):
     thread_id: str
     messages: List[MessageHistoryItem] = []
     pending_confirmation: Optional[Dict[str, Any]] = None
+
+class ConversationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    thread_id: str
+    title: str
+    archived: bool
+    created_at: datetime
+    updated_at: datetime
+
+class ConversationCreate(BaseModel):
+    thread_id: str = Field(..., min_length=1, max_length=255)
+    title: Optional[str] = Field(default="New conversation", max_length=255)
+
+class ConversationUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=255)
+    archived: Optional[bool] = None
+
+class PersonalLoanCreate(BaseModel):
+    person_name: str = Field(..., min_length=1, max_length=255)
+    loan_type: Literal["lent", "borrowed"]
+    original_amount: Decimal = Field(..., gt=0, max_digits=12, decimal_places=2)
+    transaction_date: date_type
+    due_date: Optional[date_type] = None
+    description: Optional[str] = Field(default=None, max_length=2000)
+    confirmed: bool
+
+    @field_validator("person_name")
+    @classmethod
+    def validate_person_name(cls, value: str) -> str:
+        clean_name = value.strip()
+        if not clean_name:
+            raise ValueError("Person name cannot be empty.")
+        return clean_name
+
+class LoanRepaymentCreate(BaseModel):
+    amount: Decimal = Field(..., gt=0, max_digits=12, decimal_places=2)
+    repayment_date: date_type
+    description: Optional[str] = Field(default=None, max_length=2000)
+    idempotency_key: str = Field(..., min_length=8, max_length=64)
+    confirmed: bool
+
+class LoanRepaymentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    loan_id: int
+    amount: Decimal
+    repayment_date: date_type
+    description: Optional[str] = None
+    created_at: datetime
+
+class PersonalLoanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    user_id: int
+    person_name: str
+    loan_type: Literal["lent", "borrowed"]
+    original_amount: Decimal
+    outstanding_amount: Decimal
+    transaction_date: date_type
+    due_date: Optional[date_type] = None
+    description: Optional[str] = None
+    status: Literal["active", "partially_paid", "settled"]
+    created_at: datetime
+    updated_at: datetime
+
+class LoanHistoryOut(BaseModel):
+    loan: PersonalLoanOut
+    repayments: List[LoanRepaymentOut]
+
+class LoanRepaymentResult(BaseModel):
+    loan: PersonalLoanOut
+    repayment: LoanRepaymentOut
+    created: bool
+
+class LoanSummaryOut(BaseModel):
+    total_lent: Decimal
+    total_borrowed: Decimal
+    outstanding_receivables: Decimal
+    outstanding_liabilities: Decimal
+    active_count: int
+    settled_count: int
+
+class PersonLoanBalanceOut(BaseModel):
+    person_name: Optional[str] = None
+    total_receivable: Decimal
+    total_liability: Decimal
+    loans: List[PersonalLoanOut]
+
+class DailyBriefingGoal(BaseModel):
+    title: str
+    target_amount: float
+    current_amount: float
+    progress_percentage: float
+
+class DailyBriefingResponse(BaseModel):
+    date: str
+    yesterday: str
+    yesterday_spending: float
+    month: str
+    monthly_spending: float
+    remaining_monthly_budget: Optional[float] = None
+    budget_alerts: List[str]
+    savings_goals: List[DailyBriefingGoal]
+    summary: str

@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api, AuthResponse } from '../api';
 
 interface AuthModalProps {
   onSuccess: (data: AuthResponse) => void;
+  oauthError?: string | null;
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
+export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, oauthError }) => {
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState('demo@antigravity.io');
   const [password, setPassword] = useState('password123');
@@ -13,6 +14,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   const [currency, setCurrency] = useState('PKR');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!oauthError) return;
+    const messages: Record<string, string> = {
+      google_not_configured: 'Google sign-in is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the project root .env or backend/.env, then restart the API. Password sign-in remains available.',
+      google_login_cancelled: 'Google sign-in was cancelled.',
+      google_state_invalid: 'Google sign-in could not be verified. Please try again.',
+      google_login_failed: 'Google sign-in failed. Please try again or use password sign-in.',
+    };
+    setError(messages[oauthError] || messages.google_login_failed);
+  }, [oauthError]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,7 +47,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   };
 
   const handleGoogleSignInClick = () => {
-    alert('Google OAuth 2.0 configuration notice: Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in backend .env to enable production Google SSO. Password authentication is fully enabled.');
+    window.location.assign(api.getGoogleAuthUrl());
   };
 
   return (

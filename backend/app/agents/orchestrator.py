@@ -2,7 +2,8 @@ import re
 import json
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date as date_type
+from decimal import Decimal, InvalidOperation
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from pydantic import BaseModel, Field
@@ -13,6 +14,7 @@ from app.agents.prompts.loader import get_prompt
 from app.memory.checkpointer import get_graph_checkpointer, get_scoped_thread_id
 from app.agents.confirmation import (
     create_confirmation_proposal,
+    execute_confirmed_action,
     get_pending_proposal_for_thread,
     clear_pending_proposal_for_thread,
 )
@@ -26,7 +28,18 @@ from app.agents.tools import (
     save_memory_db,
     get_user_memories_db,
 )
-from app.database import SessionLocal, Transaction
+from app.database import SessionLocal, Transaction, PersonalLoan
+from app.loans.service import (
+    LoanConflictError,
+    LoanNotFoundError,
+    LoanValidationError,
+    find_active_loans_for_person,
+    get_all_outstanding_loans as query_all_outstanding_loans,
+    get_loan_summary as query_loan_summary,
+    get_person_loan_history as query_person_loan_history,
+    get_person_outstanding_balance as query_person_outstanding_balance,
+)
+from app.loans.intent import classify_personal_loan_intent, PersonalLoanIntent
 
 logger = logging.getLogger("finpilot.orchestrator")
 
@@ -72,7 +85,57 @@ class save_memory(BaseModel):
     content: str = Field(description="User preference or habit fact to remember")
     memory_type: Optional[str] = Field(default="preference", description="Type: preference, habit, or goal")
 
-FINPILOT_TOOLS = [
+class create_lending_record(BaseModel):
+    """Propose recording money lent to another person. This action always requires confirmation."""
+    person_name: str = Field(description="Name of the person who borrowed money from the user")
+    amount: float = Field(description="Positive amount lent in the user's preferred currency")
+    transaction_date: Optional[str] = Field(default=None, description="Date in YYYY-MM-DD format")
+    due_date: Optional[str] = Field(default=None, description="Optional repayment due date in YYYY-MM-DD format")
+    description: Optional[str] = Field(default=None, description="Optional context for this loan")
+
+class create_borrowing_record(BaseModel):
+    """Propose recording money borrowed by the user. This action always requires confirmation."""
+    person_name: str = Field(description="Name of the person or people the user borrowed from")
+    amount: float = Field(description="Positive amount borrowed in the user's preferred currency")
+    transaction_date: Optional[str] = Field(default=None, description="Date in YYYY-MM-DD format")
+    due_date: Optional[str] = Field(default=None, description="Optional repayment due date in YYYY-MM-DD format")
+    description: Optional[str] = Field(default=None, description="Optional context for this loan")
+
+class record_lending_repayment(BaseModel):
+    """Propose recording money received back for a loan previously lent. Confirmation is required."""
+    person_name: str = Field(description="Name of the person repaying the user")
+    amount: float = Field(description="Positive repayment amount received")
+    loan_id: Optional[int] = Field(default=None, description="Specific loan ID when the person has multiple open loans")
+    repayment_date: Optional[str] = Field(default=None, description="Date in YYYY-MM-DD format")
+    description: Optional[str] = Field(default=None, description="Optional repayment note")
+
+class record_borrowing_repayment(BaseModel):
+    """Propose recording money the user returned for a personal loan. Confirmation is required."""
+    person_name: str = Field(description="Name of the person the user is repaying")
+    amount: float = Field(description="Positive repayment amount returned")
+    loan_id: Optional[int] = Field(default=None, description="Specific loan ID when the person has multiple open loans")
+    repayment_date: Optional[str] = Field(default=None, description="Date in YYYY-MM-DD format")
+    description: Optional[str] = Field(default=None, description="Optional repayment note")
+
+class get_person_loan_history(BaseModel):
+    """Retrieve a person's loan records for the authenticated user."""
+    person_name: str = Field(description="Person name to search")
+    loan_type: Optional[str] = Field(default=None, description="Optional filter: lent or borrowed")
+
+class get_person_outstanding_balance(BaseModel):
+    """Calculate outstanding receivables or liabilities for a person."""
+    person_name: Optional[str] = Field(default=None, description="Optional person name; omit for all people")
+    loan_type: Optional[str] = Field(default=None, description="Optional filter: lent or borrowed")
+
+class get_all_outstanding_loans(BaseModel):
+    """List all active or partially repaid loans belonging to the authenticated user."""
+    loan_type: Optional[str] = Field(default=None, description="Optional filter: lent or borrowed")
+
+class get_loan_summary(BaseModel):
+    """Calculate totals for money lent, borrowed, and outstanding."""
+    pass
+
+FINPILOT_TOOLS: List[type[BaseModel]] = [
     record_transaction,
     propose_delete,
     propose_update,
@@ -80,6 +143,14 @@ FINPILOT_TOOLS = [
     list_recent_transactions,
     check_budget,
     save_memory,
+    create_lending_record,
+    create_borrowing_record,
+    record_lending_repayment,
+    record_borrowing_repayment,
+    get_person_loan_history,
+    get_person_outstanding_balance,
+    get_all_outstanding_loans,
+    get_loan_summary,
 ]
 
 
@@ -167,6 +238,208 @@ def _is_cancellation_query(lower_q: str) -> bool:
     if clean in exact_matches:
         return True
     return bool(re.match(r"^(no|cancel|stop)\b.*(delete|nevermind)?", clean))
+
+
+def _parse_loan_date(value: Optional[str], label: str) -> Optional[date_type]:
+    if not value:
+        return None
+    try:
+        return date_type.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise LoanValidationError(f"{label} must use YYYY-MM-DD format.") from exc
+
+
+def _read_loan_amount(value: Any) -> Decimal:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise LoanValidationError("Please provide a valid positive amount.") from exc
+    if not amount.is_finite() or amount <= 0 or amount > Decimal("9999999999.99"):
+        raise LoanValidationError("Please provide a valid positive amount.")
+    rounded = amount.quantize(Decimal("0.01"))
+    if rounded != amount:
+        raise LoanValidationError("Amounts may have no more than two decimal places.")
+    return rounded
+
+
+def _handle_loan_tool_action(
+    action_name: str,
+    args: Dict[str, Any],
+    user_id: int,
+    user_currency: str,
+    scoped_tid: str,
+) -> Optional[tuple[str, str, Optional[Dict[str, Any]], List[str]]]:
+    """Execute read-only loan tools or create a confirmation proposal for loan writes."""
+    write_actions = {
+        "create_lending_record": ("create_lending_record", "lent"),
+        "create_borrowing_record": ("create_borrowing_record", "borrowed"),
+        "record_lending_repayment": ("record_lending_repayment", "lent"),
+        "record_borrowing_repayment": ("record_borrowing_repayment", "borrowed"),
+    }
+
+    try:
+        if action_name in write_actions:
+            action_type, loan_type = write_actions[action_name]
+            person_name = str(args.get("person_name") or "").strip()
+            if not person_name:
+                return ("Who was the other person in this loan?", "Please specify the person.", None, [])
+            amount = _read_loan_amount(args.get("amount"))
+            transaction_date = _parse_loan_date(args.get("transaction_date"), "Transaction date")
+            due_date = _parse_loan_date(args.get("due_date"), "Due date")
+            repayment_date = _parse_loan_date(args.get("repayment_date"), "Repayment date")
+            description = str(args.get("description") or "").strip() or None
+
+            if action_name in ("create_lending_record", "create_borrowing_record"):
+                details = {
+                    "person_name": person_name,
+                    "amount": str(amount),
+                    "transaction_date": transaction_date.isoformat() if transaction_date else None,
+                    "due_date": due_date.isoformat() if due_date else None,
+                    "description": description,
+                }
+                proposal = create_confirmation_proposal(
+                    user_id=user_id,
+                    action_type=action_type,
+                    target_id=0,
+                    summary=f"Record {loan_type} loan of {user_currency} {amount:,.2f} with {person_name}",
+                    details=details,
+                    conversation_id=scoped_tid,
+                )
+                final = (
+                    f"Please confirm: record a **{loan_type}** loan of **{user_currency} {amount:,.2f}** "
+                    f"with **{person_name}**. This will be tracked separately from income and expenses."
+                )
+            else:
+                session = SessionLocal()
+                try:
+                    loan_id = args.get("loan_id")
+                    if loan_id is not None:
+                        matched = session.query(PersonalLoan).filter(
+                            PersonalLoan.id == int(loan_id),
+                            PersonalLoan.user_id == user_id,
+                            PersonalLoan.loan_type == loan_type,
+                            PersonalLoan.status.in_(("active", "partially_paid")),
+                        ).all()
+                    else:
+                        matched = find_active_loans_for_person(session, user_id, person_name, loan_type)
+                finally:
+                    session.close()
+
+                if not matched:
+                    return (
+                        f"I couldn't find an outstanding {loan_type} loan for {person_name}. "
+                        "Please check the person's name or loan history.",
+                        "No matching outstanding loan was found.",
+                        None,
+                        [action_name],
+                    )
+                if len(matched) > 1:
+                    choices = "\n".join(
+                        f"- Loan #{loan.id}: {user_currency} {loan.outstanding_amount:,.2f} outstanding "
+                        f"({loan.transaction_date})"
+                        for loan in matched
+                    )
+                    return (
+                        f"There are multiple outstanding loans with {person_name}. Which one should this repayment apply to?\n{choices}",
+                        "Please choose the loan to apply the repayment to.",
+                        None,
+                        [action_name],
+                    )
+                loan = matched[0]
+                if amount > loan.outstanding_amount:
+                    return (
+                        f"The repayment amount exceeds loan #{loan.id}'s outstanding balance of "
+                        f"{user_currency} {loan.outstanding_amount:,.2f}.",
+                        "Repayment exceeds the outstanding balance.",
+                        None,
+                        [action_name],
+                    )
+                details = {
+                    "amount": str(amount),
+                    "repayment_date": repayment_date.isoformat() if repayment_date else None,
+                    "description": description,
+                }
+                proposal = create_confirmation_proposal(
+                    user_id=user_id,
+                    action_type=action_type,
+                    target_id=loan.id,
+                    summary=(
+                        f"Record {loan_type} repayment of {user_currency} {amount:,.2f} "
+                        f"for loan #{loan.id} with {loan.person_name}"
+                    ),
+                    details=details,
+                    conversation_id=scoped_tid,
+                )
+                final = (
+                    f"Please confirm: record a repayment of **{user_currency} {amount:,.2f}** "
+                    f"for loan #{loan.id} with **{loan.person_name}**. "
+                    f"Current outstanding balance: {user_currency} {loan.outstanding_amount:,.2f}."
+                )
+            if "error" in proposal:
+                return (f"⚠️ {proposal['error']}", "Loan confirmation could not be created.", None, [])
+            return (final, "Please confirm this loan record.", proposal, ["request_confirmation"])
+
+        with SessionLocal() as session:
+            if action_name == "get_loan_summary":
+                summary = query_loan_summary(session, user_id)
+                text = (
+                    f"### Personal Loan Summary ({user_currency})\n"
+                    f"- Total money lent: {user_currency} {summary['total_lent']:,.2f}\n"
+                    f"- Total money borrowed: {user_currency} {summary['total_borrowed']:,.2f}\n"
+                    f"- Outstanding receivables: {user_currency} {summary['outstanding_receivables']:,.2f}\n"
+                    f"- Outstanding liabilities: {user_currency} {summary['outstanding_liabilities']:,.2f}\n"
+                    f"- Pending: {summary['active_count']} · Settled: {summary['settled_count']}"
+                )
+                return text, "Personal loan summary retrieved.", None, [action_name]
+
+            if action_name == "get_all_outstanding_loans":
+                loan_type = args.get("loan_type")
+                if loan_type not in (None, "lent", "borrowed"):
+                    return ("Use 'lent' or 'borrowed' to filter loans.", "Invalid loan type.", None, [])
+                loans = query_all_outstanding_loans(session, user_id, loan_type)
+                title = "Outstanding Personal Loans"
+                lines = [
+                    f"- Loan #{loan.id}: {loan.person_name} · {loan.loan_type} · "
+                    f"{user_currency} {loan.outstanding_amount:,.2f} outstanding · {loan.status}"
+                    for loan in loans
+                ]
+                text = f"### {title}\n" + "\n".join(lines) if lines else "You have no outstanding personal loans."
+                return text, f"Found {len(loans)} outstanding loans.", None, [action_name]
+
+            if action_name == "get_person_loan_history":
+                person_name = str(args.get("person_name") or "").strip()
+                if not person_name:
+                    return ("Whose loan history would you like to see?", "Please specify a person.", None, [])
+                loan_type = args.get("loan_type")
+                if loan_type not in (None, "lent", "borrowed"):
+                    return ("Use 'lent' or 'borrowed' to filter loan history.", "Invalid loan type.", None, [])
+                loans = query_person_loan_history(session, user_id, person_name, loan_type)
+                lines = [
+                    f"- Loan #{loan.id}: {loan.loan_type} {user_currency} {loan.original_amount:,.2f}, "
+                    f"{user_currency} {loan.outstanding_amount:,.2f} outstanding, {loan.status} "
+                    f"(recorded {loan.transaction_date})"
+                    for loan in loans
+                ]
+                text = f"### Loan History for {person_name}\n" + "\n".join(lines) if lines else f"No loans recorded for {person_name}."
+                return text, f"Found {len(loans)} loan records for {person_name}.", None, [action_name]
+
+            if action_name == "get_person_outstanding_balance":
+                person_name = str(args.get("person_name") or "").strip() or None
+                loan_type = args.get("loan_type")
+                if loan_type not in (None, "lent", "borrowed"):
+                    return ("Use 'lent' or 'borrowed' to filter outstanding balances.", "Invalid loan type.", None, [])
+                balance = query_person_outstanding_balance(session, user_id, person_name, loan_type)
+                scope = f" for {person_name}" if person_name else ""
+                text = (
+                    f"### Outstanding Balance{scope}\n"
+                    f"- Owed to you: {user_currency} {balance['total_receivable']:,.2f}\n"
+                    f"- You owe others: {user_currency} {balance['total_liability']:,.2f}"
+                )
+                return text, "Outstanding personal loan balances retrieved.", None, [action_name]
+    except (LoanConflictError, LoanNotFoundError, LoanValidationError) as exc:
+        return (f"⚠️ {exc}", str(exc), None, [])
+
+    return None
 
 
 # =========================================================================
@@ -266,6 +539,26 @@ async def run_finpilot_agent(
                     spoken_summary_text = "Update failed."
                 new_pending_action = None
                 clear_pending_proposal_for_thread(user_id, scoped_tid)
+
+            elif action_type in {
+                "create_lending_record",
+                "create_borrowing_record",
+                "record_lending_repayment",
+                "record_borrowing_repayment",
+            }:
+                result = execute_confirmed_action(
+                    user_id=user_id,
+                    action_token=active_pending.get("action_token", ""),
+                    confirmed=True,
+                )
+                final_response_text = result.get("message", "The loan action could not be completed.")
+                spoken_summary_text = final_response_text
+                if result.get("success"):
+                    executed_tools.append(action_type)
+                    new_pending_action = None
+                else:
+                    final_response_text = f"⚠️ {result.get('error', final_response_text)}"
+                    new_pending_action = active_pending
 
             else:
                 final_response_text = "Operation confirmed."
@@ -378,6 +671,44 @@ async def run_finpilot_agent(
         clear_pending_proposal_for_thread(user_id, scoped_tid)
         new_pending_action = None
 
+    loan_intent = classify_personal_loan_intent(clean_query, existing_messages)
+    if loan_intent and loan_intent.action in {"ambiguous_transfer", "gift_expense", "payment_expense"}:
+        if loan_intent.action in {"gift_expense", "payment_expense"}:
+            res = _handle_offline_loan_intent(
+                intent=loan_intent,
+                query=clean_query,
+                thread_id=scoped_tid,
+                user_id=user_id,
+                user_currency=user_currency,
+                memories_used=memories_used,
+            )
+            existing_messages.append(HumanMessage(content=clean_query))
+            existing_messages.append(AIMessage(content=res["response"]))
+            _save_checkpoint_state(scoped_tid, existing_messages, res.get("pending_confirmation"), user_id, user_currency)
+            return res
+
+        name = f" to {loan_intent.person_name}" if loan_intent.person_name else ""
+        amount_text = (
+            f" {user_currency} {loan_intent.amount:,.2f}"
+            if loan_intent.amount is not None
+            else ""
+        )
+        final_response_text = (
+            f"You mentioned giving{ name}{amount_text}. Was this a loan, a gift, or a payment for something?"
+        )
+        spoken_summary_text = "Was this a loan, a gift, or a payment?"
+        existing_messages.append(HumanMessage(content=clean_query))
+        existing_messages.append(AIMessage(content=final_response_text))
+        _save_checkpoint_state(scoped_tid, existing_messages, None, user_id, user_currency)
+        return {
+            "response": final_response_text,
+            "spoken_summary": spoken_summary_text,
+            "thread_id": scoped_tid,
+            "executed_tools": [],
+            "memories_used": memories_used,
+            "pending_confirmation": None,
+        }
+
     # =========================================================================
     # MULTI-TURN STEP 4: Groq Dynamic Fallback or Rule Fallback Engine
     # =========================================================================
@@ -388,6 +719,7 @@ async def run_finpilot_agent(
             user_id=user_id,
             user_currency=user_currency,
             user_memories=user_memories,
+            conversation_messages=existing_messages,
         )
         existing_messages.append(HumanMessage(content=clean_query))
         existing_messages.append(AIMessage(content=res["response"]))
@@ -414,6 +746,17 @@ AVAILABLE ACTIONS:
 - list_recent_transactions: Retrieve recent database records.
 - check_budget: Monthly budget status.
 - save_memory: Save preference fact.
+- create_lending_record / create_borrowing_record: Propose a personal loan; never record it before explicit confirmation.
+- record_lending_repayment / record_borrowing_repayment: Propose a repayment for an existing loan; never record it before explicit confirmation.
+- get_person_loan_history / get_person_outstanding_balance / get_all_outstanding_loans / get_loan_summary: Read verified, user-scoped loan data.
+
+PERSONAL LOAN RULES:
+- A loan is a receivable or liability, never a normal income or expense transaction.
+- Treat explicit gifts and payments for goods or services as gifts/expenses, not loans.
+- If someone says only that they gave money to a person without saying it was a loan, gift, or purchase/payment, ask which it was and do not write a record.
+- Use repayments only when the user explicitly says money was returned/received back. Ask which loan when a person has multiple open loans.
+- Every loan creation or repayment requires an explicit confirmation proposal.
+- Never infer missing names, amounts, dates, or whether the user lent versus borrowed.
 
 VOICE GUIDELINE:
 {voice_prompt}
@@ -530,6 +873,30 @@ VOICE GUIDELINE:
             final_response_text = f"Saved to your durable long-term memory: \"{args.get('content', '')}\""
             spoken_summary_text = "Preference saved."
 
+        elif action_name in {
+            "create_lending_record",
+            "create_borrowing_record",
+            "record_lending_repayment",
+            "record_borrowing_repayment",
+            "get_person_loan_history",
+            "get_person_outstanding_balance",
+            "get_all_outstanding_loans",
+            "get_loan_summary",
+        }:
+            result = _handle_loan_tool_action(
+                action_name=action_name,
+                args=args,
+                user_id=user_id,
+                user_currency=user_currency,
+                scoped_tid=scoped_tid,
+            )
+            if result:
+                final_response_text, spoken_summary_text, new_pending_action, loan_tools = result
+                executed_tools.extend(loan_tools)
+            else:
+                final_response_text = content
+                spoken_summary_text = content.split("\n")[0][:100]
+
         else:
             final_response_text = content
             spoken_summary_text = content.split("\n")[0][:100]
@@ -541,6 +908,7 @@ VOICE GUIDELINE:
             user_id=user_id,
             user_currency=user_currency,
             user_memories=user_memories,
+            conversation_messages=existing_messages,
         )
         final_response_text = res["response"]
         spoken_summary_text = res["spoken_summary"]
@@ -554,6 +922,7 @@ VOICE GUIDELINE:
             user_id=user_id,
             user_currency=user_currency,
             user_memories=user_memories,
+            conversation_messages=existing_messages,
         )
         final_response_text = res["response"]
         spoken_summary_text = res["spoken_summary"]
@@ -575,6 +944,137 @@ VOICE GUIDELINE:
     }
 
 
+def _handle_offline_loan_intent(
+    *,
+    intent: PersonalLoanIntent,
+    query: str,
+    thread_id: str,
+    user_id: int,
+    user_currency: str,
+    memories_used: List[str],
+) -> Dict[str, Any]:
+    """Route recognized loan requests through the same scoped services and confirmation proposals."""
+    if intent.action in {"gift_expense", "payment_expense"}:
+        if intent.amount is None:
+            response = "What amount should I record for this gift or payment?"
+            return {
+                "response": response,
+                "spoken_summary": "Please specify the amount.",
+                "thread_id": thread_id,
+                "executed_tools": [],
+                "memories_used": memories_used,
+                "pending_confirmation": None,
+            }
+        category = "Gift" if intent.action == "gift_expense" else "Other"
+        result = record_transaction_db(
+            user_id=user_id,
+            category=category,
+            amount=float(intent.amount),
+            type="expense",
+            date_str=intent.transaction_date.isoformat() if intent.transaction_date else None,
+            description=query,
+        )
+        if not result.get("success"):
+            response = f"⚠️ Could not record this {category.lower()} expense: {result.get('error', 'Database error')}."
+            spoken = "Expense could not be recorded."
+        else:
+            response = (
+                f"Recorded this as a **{category.lower()} expense**, not a loan: "
+                f"{user_currency} {intent.amount:,.2f}."
+            )
+            spoken = f"Recorded a {category.lower()} expense of {intent.amount:.2f} {user_currency}."
+        return {
+            "response": response,
+            "spoken_summary": spoken,
+            "thread_id": thread_id,
+            "executed_tools": ["record_transaction"],
+            "memories_used": memories_used,
+            "pending_confirmation": None,
+        }
+
+    action_tools = {
+        "create_lending": "create_lending_record",
+        "create_borrowing": "create_borrowing_record",
+        "repayment_lending": "record_lending_repayment",
+        "repayment_borrowing": "record_borrowing_repayment",
+        "history": "get_person_loan_history",
+        "balance": "get_person_outstanding_balance",
+        "outstanding": "get_all_outstanding_loans",
+        "summary": "get_loan_summary",
+    }
+
+    if intent.action == "ambiguous_transfer":
+        name = f" to {intent.person_name}" if intent.person_name else ""
+        amount = f" {user_currency} {intent.amount:,.2f}" if intent.amount is not None else ""
+        response = f"You mentioned giving{name}{amount}. Was this a loan, a gift, or a payment for something?"
+        return {
+            "response": response,
+            "spoken_summary": "Was this a loan, a gift, or a payment?",
+            "thread_id": thread_id,
+            "executed_tools": [],
+            "memories_used": memories_used,
+            "pending_confirmation": None,
+        }
+
+    if intent.action in {"create_lending", "create_borrowing", "repayment_lending", "repayment_borrowing"}:
+        if not intent.person_name:
+            response = "Who was the other person in this loan or repayment?"
+            return {
+                "response": response,
+                "spoken_summary": "Please specify the person.",
+                "thread_id": thread_id,
+                "executed_tools": [],
+                "memories_used": memories_used,
+                "pending_confirmation": None,
+            }
+        if intent.amount is None:
+            response = f"What amount should I record for {intent.person_name}?"
+            return {
+                "response": response,
+                "spoken_summary": "Please specify the amount.",
+                "thread_id": thread_id,
+                "executed_tools": [],
+                "memories_used": memories_used,
+                "pending_confirmation": None,
+            }
+
+    action_name = action_tools.get(intent.action)
+    if not action_name:
+        return {
+            "response": "I couldn't determine the personal loan action. Please clarify whether this is lending, borrowing, or repayment.",
+            "spoken_summary": "Please clarify the loan action.",
+            "thread_id": thread_id,
+            "executed_tools": [],
+            "memories_used": memories_used,
+            "pending_confirmation": None,
+        }
+
+    args: Dict[str, Any] = {
+        "person_name": intent.person_name,
+        "amount": str(intent.amount) if intent.amount is not None else None,
+        "loan_type": intent.loan_type,
+        "transaction_date": intent.transaction_date.isoformat() if intent.transaction_date else None,
+        "repayment_date": intent.transaction_date.isoformat() if intent.transaction_date else None,
+        "due_date": intent.due_date.isoformat() if intent.due_date else None,
+    }
+    result = _handle_loan_tool_action(action_name, args, user_id, user_currency, thread_id)
+    if result is None:
+        response = "I couldn't complete that personal loan request."
+        spoken = response
+        pending = None
+        tools: List[str] = []
+    else:
+        response, spoken, pending, tools = result
+    return {
+        "response": response,
+        "spoken_summary": spoken,
+        "thread_id": thread_id,
+        "executed_tools": tools,
+        "memories_used": memories_used,
+        "pending_confirmation": pending,
+    }
+
+
 def run_local_offline_orchestrator(
     query: str,
     thread_id: str,
@@ -582,6 +1082,7 @@ def run_local_offline_orchestrator(
     user_currency: str,
     user_memories: List[Dict[str, Any]],
     note: Optional[str] = None,
+    conversation_messages: Optional[List[BaseMessage]] = None,
 ) -> Dict[str, Any]:
     """
     Deterministic rule-based offline fallback engine.
@@ -590,6 +1091,17 @@ def run_local_offline_orchestrator(
     lower_q = query.lower().strip()
     executed_tools = []
     memories_used = [m["content"] for m in user_memories]
+
+    loan_intent = classify_personal_loan_intent(query, conversation_messages or [])
+    if loan_intent:
+        return _handle_offline_loan_intent(
+            intent=loan_intent,
+            query=query,
+            thread_id=thread_id,
+            user_id=user_id,
+            user_currency=user_currency,
+            memories_used=memories_used,
+        )
 
     # 1. Check for Memory intent
     if any(k in lower_q for k in ["remember", "prefer", "note that", "save preference", "habit"]):

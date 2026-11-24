@@ -1,10 +1,12 @@
 import uuid
 import logging
 from datetime import datetime, timedelta, timezone
+from datetime import date as date_type
 from typing import Dict, Any, Optional
 
 from app.agents.tools import update_transaction_db, delete_transaction_db
-from app.database import SessionLocal, Transaction, Budget, SavingsGoal
+from app.database import SessionLocal, Transaction, Budget, PersonalLoan
+from app.loans.service import create_personal_loan, record_loan_repayment
 
 logger = logging.getLogger("finpilot.confirmation")
 
@@ -65,6 +67,20 @@ def create_confirmation_proposal(
                     "error": f"Budget #{target_id} not found or not authorized for your account."
                 }
             record_info = f"{b_rec.category} limit PKR {float(b_rec.monthly_limit):,.2f}"
+            details["original_record"] = record_info
+
+        elif action_type in ("record_lending_repayment", "record_borrowing_repayment"):
+            loan = session.query(PersonalLoan).filter(
+                PersonalLoan.id == target_id,
+                PersonalLoan.user_id == user_id,
+            ).first()
+            expected_type = "lent" if action_type == "record_lending_repayment" else "borrowed"
+            if not loan or loan.loan_type != expected_type or loan.status == "settled":
+                return {"error": "Active loan not found or not authorized for this account."}
+            record_info = (
+                f"{loan.person_name}, {loan.loan_type}, outstanding "
+                f"{loan.outstanding_amount}, loan #{loan.id}"
+            )
             details["original_record"] = record_info
 
         now = _get_utc_now()
@@ -245,6 +261,60 @@ def execute_confirmed_action(
                     "details": res,
                 }
             return res
+
+        elif action_type in ("create_lending_record", "create_borrowing_record"):
+            with SessionLocal() as session:
+                loan = create_personal_loan(
+                    session,
+                    user_id=user_id,
+                    person_name=details["person_name"],
+                    loan_type="lent" if action_type == "create_lending_record" else "borrowed",
+                    amount=details["amount"],
+                    transaction_date=date_type.fromisoformat(details["transaction_date"]) if details.get("transaction_date") else None,
+                    due_date=date_type.fromisoformat(details["due_date"]) if details.get("due_date") else None,
+                    description=details.get("description"),
+                )
+            proposal["status"] = "completed"
+            proposal["confirmation_status"] = "completed"
+            _pending_proposals.pop(action_token, None)
+            if conv_id:
+                clear_pending_proposal_for_thread(user_id, conv_id)
+            return {
+                "success": True,
+                "status": "completed",
+                "message": (
+                    f"Recorded {loan.loan_type} loan #{loan.id} with {loan.person_name} "
+                    f"for {loan.original_amount}."
+                ),
+                "details": {"loan_id": loan.id, "status": loan.status},
+            }
+
+        elif action_type in ("record_lending_repayment", "record_borrowing_repayment"):
+            with SessionLocal() as session:
+                repayment, loan, created = record_loan_repayment(
+                    session,
+                    user_id=user_id,
+                    loan_id=target_id,
+                    amount=details["amount"],
+                    idempotency_key=action_token,
+                    expected_loan_type="lent" if action_type == "record_lending_repayment" else "borrowed",
+                    repayment_date=date_type.fromisoformat(details["repayment_date"]) if details.get("repayment_date") else None,
+                    description=details.get("description"),
+                )
+            proposal["status"] = "completed"
+            proposal["confirmation_status"] = "completed"
+            _pending_proposals.pop(action_token, None)
+            if conv_id:
+                clear_pending_proposal_for_thread(user_id, conv_id)
+            return {
+                "success": True,
+                "status": "completed",
+                "message": (
+                    f"Recorded repayment of {repayment.amount} for loan #{loan.id} with "
+                    f"{loan.person_name}. Outstanding balance: {loan.outstanding_amount}."
+                ),
+                "details": {"loan_id": loan.id, "repayment_id": repayment.id, "created": created},
+            }
 
         else:
             return {"success": False, "error": f"Unsupported confirmation action type: {action_type}"}

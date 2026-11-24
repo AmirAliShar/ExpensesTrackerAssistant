@@ -159,3 +159,4 @@ __all__ = [
 if __name__ == "__main__":
     init_database()
     mcp.run(transport="streamable-http", port=8001)
+"python -m app.mcp.server"

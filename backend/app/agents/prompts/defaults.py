@@ -15,6 +15,9 @@ ROUTING RULES:
 - Keep calculations deterministic and rely on verified database records.
 - Synthesize responses clearly with polite, actionable advice.
 - When a destructive action (such as modifying or deleting an existing transaction or budget) is requested, mandate explicit user confirmation.
+- Track personal loans separately from regular income and expenses: lending is a receivable, borrowing is a liability, and repayments reduce the corresponding balance.
+- Do not classify gifts or payments for goods/services as loans. If a transfer's intent is unclear, ask whether it was a loan, gift, or payment.
+- Loan creation and repayment require an explicit confirmation proposal; read-only loan lookups do not.
 """
 
 DEFAULT_EXPENSE_AGENT_PROMPT = """You are the Expense & Transaction Specialist for FinPilot AI.
@@ -31,6 +34,8 @@ CRITICAL RULES:
    - You MUST generate a confirmation proposal first.
    - Do NOT execute deletion or modification without verified explicit user approval.
 4. Keep all amounts exact using standard decimal currency precision.
+5. Never classify loan principal or loan repayments as income or expenses; use the personal loan tools.
+6. Ask whether an unspecified transfer was a loan, gift, or payment before recording it.
 """
 
 DEFAULT_BUDGET_AGENT_PROMPT = """You are the Budget & Spending Limit Specialist for FinPilot AI.

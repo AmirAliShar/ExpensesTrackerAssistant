@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Optional, List
 
 from dotenv import load_dotenv
 from sqlalchemy import (
@@ -13,12 +14,17 @@ from sqlalchemy import (
     TIMESTAMP,
     Date,
     TEXT,
+    Boolean,
+    JSON,
     ForeignKey,
     desc,
+    CheckConstraint,
+    Index,
+    UniqueConstraint,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship, sessionmaker
 
 from app.core.config import settings
 
@@ -71,6 +77,11 @@ DATABASE_URL = settings.DATABASE_URL
 
 Base = declarative_base()
 
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
@@ -115,6 +126,7 @@ class User(Base):
     budgets = relationship("Budget", back_populates="user", cascade="all, delete-orphan")
     savings_goals = relationship("SavingsGoal", back_populates="user", cascade="all, delete-orphan")
     memories = relationship("UserMemory", back_populates="user", cascade="all, delete-orphan")
+    personal_loans = relationship("PersonalLoan", back_populates="user", cascade="all, delete-orphan")
 
 
 class Transaction(Base):
@@ -167,6 +179,102 @@ class UserMemory(Base):
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="memories")
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    thread_id = Column(String(255), nullable=False, unique=True, index=True)
+    title = Column(String(255), nullable=False, default="New conversation")
+    archived = Column(Boolean, nullable=False, default=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    messages = relationship("ConversationMessage", back_populates="conversation", cascade="all, delete-orphan")
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)
+    content = Column(TEXT, nullable=False)
+    message_metadata = Column("metadata", JSON, nullable=True)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    conversation = relationship("Conversation", back_populates="messages")
+
+
+class PersonalLoan(Base):
+    __tablename__ = "personal_loans"
+    __table_args__ = (
+        CheckConstraint("loan_type IN ('lent', 'borrowed')", name="ck_personal_loans_type"),
+        CheckConstraint("original_amount > 0", name="ck_personal_loans_original_amount"),
+        CheckConstraint(
+            "outstanding_amount >= 0 AND outstanding_amount <= original_amount",
+            name="ck_personal_loans_outstanding_amount",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'partially_paid', 'settled')",
+            name="ck_personal_loans_status",
+        ),
+        Index("ix_personal_loans_user_person", "user_id", "person_name"),
+        Index("ix_personal_loans_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    person_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    loan_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    original_amount: Mapped[Decimal] = mapped_column(Numeric(precision=12, scale=2), nullable=False)
+    outstanding_amount: Mapped[Decimal] = mapped_column(Numeric(precision=12, scale=2), nullable=False)
+    transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
+    due_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(TEXT, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False, default=_utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        default=_utcnow_naive,
+        onupdate=_utcnow_naive,
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="personal_loans")
+    repayments: Mapped[List["LoanRepayment"]] = relationship(
+        "LoanRepayment",
+        back_populates="loan",
+        cascade="all, delete-orphan",
+        order_by="LoanRepayment.repayment_date.desc()",
+    )
+
+
+class LoanRepayment(Base):
+    __tablename__ = "loan_repayments"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_loan_repayments_amount"),
+        UniqueConstraint("idempotency_key", name="uq_loan_repayments_idempotency_key"),
+        Index("ix_loan_repayments_loan_date", "loan_id", "repayment_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    loan_id: Mapped[int] = mapped_column(
+        ForeignKey("personal_loans.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(precision=12, scale=2), nullable=False)
+    repayment_date: Mapped[date] = mapped_column(Date, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(TEXT, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False, default=_utcnow_naive)
+
+    loan: Mapped["PersonalLoan"] = relationship("PersonalLoan", back_populates="repayments")
 
 
 def init_database() -> None:

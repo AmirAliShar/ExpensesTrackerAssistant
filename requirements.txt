@@ -15,4 +15,5 @@ fastmcp>=2.13.0.2
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 requests>=2.31.0
+google-auth>=2.0.0
 edge-tts>=6.1.12

@@ -7,14 +7,14 @@ FinPilot AI is an enterprise-grade, multi-user, voice-enabled personal finance a
 ## 🚀 Key Architectural Upgrades & Capabilities
 
 1. **Mandatory PostgreSQL Engine & Alembic Migrations**
-   - Authoritative PostgreSQL storage for all users, transactions, budgets, savings goals, and durable memories.
+   - Authoritative PostgreSQL storage for users, transactions, budgets, savings goals, durable memories, and personal loans.
    - **No Silent SQLite Fallback:** The backend fails fast with clear, actionable diagnostics if PostgreSQL is unavailable or credentials fail.
    - Automated Alembic migrations manage database schema versions idempotently.
    - Exact Decimal currency arithmetic (`Numeric(12, 2)`) avoids floating-point calculation errors.
 
 2. **Strict Multi-User Security & Tenant Isolation**
    - Cryptographic `bcrypt` password hashing and secure `JWT` authentication.
-   - Every transactional, budget, goal, and memory query is strictly scoped to the authenticated user ID (`user_id`).
+   - Every transaction, budget, goal, memory, and personal loan query is strictly scoped to the authenticated user ID (`user_id`).
    - Cross-tenant access is prohibited at both the API and database levels.
    - Thread identifiers are automatically scoped to each user (`user_{user_id}_{thread_id}`).
 
@@ -49,6 +49,12 @@ FinPilot AI is an enterprise-grade, multi-user, voice-enabled personal finance a
    - State checkpoints stored across server restarts.
    - Permanent user preferences (e.g. target savings rate, preferred currency) stored in the `user_memories` PostgreSQL table with complete user inspection and deletion controls.
 
+8. **Personal Lending & Borrowing**
+   - Records personal loans as receivables or liabilities, separate from ordinary income and expenses.
+   - Tracks partial/full repayments with Decimal amounts, row locking, outstanding-balance constraints, and idempotency keys.
+   - The assistant asks for clarification on ambiguous transfers and requires explicit confirmation before creating a loan or repayment.
+   - The **People & Loans** page shows totals, people-wise loan history, statuses, and repayment history.
+
 ---
 
 ## 🧠 System Architecture
@@ -61,7 +67,7 @@ graph TD
     subgraph Multi-User Security & Persistence
         FastAPI --> Auth[Bcrypt + JWT Authentication]
         FastAPI --> DB[(PostgreSQL Database - Port 5432)]
-        DB --> Tables[Users • Transactions • Budgets • Goals • Memories]
+        DB --> Tables[Users • Transactions • Budgets • Goals • Memories • Personal Loans]
         DB --> Checkpoints[LangGraph Checkpoint Schema]
     end
     
@@ -83,6 +89,7 @@ graph TD
     subgraph Human-in-the-Loop Safeguards
         ExpenseAgent -->|Destructive Action| HITL[Confirmation Proposal]
         HITL -->|Requires Explicit User Confirmation| ReactApp
+        Supervisor -->|Loan Create / Repayment| HITL
     end
 
     subgraph Voice Services
@@ -135,6 +142,19 @@ TTS_MODEL=en-US-ChristopherNeural
 JWT_SECRET_KEY=antigravity_super_secret_jwt_key_2026_finance_assistant
 ACCESS_TOKEN_EXPIRE_MINUTES=1440
 ```
+
+### Optional Google OAuth 2.0
+
+Google sign-in is available when these settings are configured in `backend/.env` (or the root `.env`):
+
+```env
+GOOGLE_CLIENT_ID=your-oauth-client-id
+GOOGLE_CLIENT_SECRET=your-oauth-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:8000/api/auth/google/callback
+FRONTEND_URL=http://localhost:5173
+```
+
+In Google Cloud Console, register `GOOGLE_REDIRECT_URI` as an Authorized redirect URI for a Web application OAuth client. For production, set the API callback and frontend URLs to their HTTPS public origins. The callback validates OAuth state, ID-token signature/audience/issuer/expiry, nonce, and verified email before issuing the app JWT. Password sign-in does not depend on these settings.
 
 ---
 
@@ -219,6 +239,54 @@ pytest -v tests/
 - `test_prompts.py`: Role-specific default prompts and environment variable overrides.
 - `test_hitl_confirmation.py`: Human-in-the-Loop proposal generation, cancellation without database side effects, and idempotency protection.
 - `test_voice_and_tools.py`: Whisper audio validation and deterministic financial analytics calculations.
+- `test_daily_briefing_conversations.py`: Database-grounded briefings and cross-user conversation isolation.
+- `test_personal_loans.py`: Decimal accounting, partial/full repayment, idempotency, same-name handling, user isolation, intent clarification, and confirmed assistant writes.
+
+---
+
+## Daily-Use Conversation Persistence
+
+Persistent conversations are stored in PostgreSQL in `conversations` and `conversation_messages`.
+Each conversation remains isolated by authenticated `user_id`, while LangGraph checkpoints continue to
+carry workflow state for active threads.
+
+Available conversation APIs:
+
+```text
+GET    /api/conversations
+POST   /api/conversations
+PATCH  /api/conversations/{conversation_id}
+DELETE /api/conversations/{conversation_id}
+POST   /api/agent/query/stream
+GET    /api/agent/history
+DELETE /api/agent/history
+GET    /api/briefings/daily
+```
+
+Personal Lending & Borrowing APIs:
+
+```text
+GET    /api/loans/summary
+GET    /api/loans?loan_type=lent&status=active&limit=100&offset=0
+GET    /api/loans/balance?person_name=Arslan&loan_type=lent
+GET    /api/loans/{loan_id}/history
+POST   /api/loans                         (requires confirmed: true)
+POST   /api/loans/{loan_id}/repayments    (requires confirmed: true and idempotency_key)
+```
+
+The migration `003_personal_loans` creates the `personal_loans` and `loan_repayments` tables.
+Run `alembic upgrade head` from `backend/` after deploying this feature. Loan principal and
+repayments are not written to the regular `transactions` table.
+
+Apply the migration after upgrading:
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+The conversation migration is compatible with databases initialized by `Base.metadata.create_all()`
+and will create missing conversation tables without changing existing financial tables.
 
 ---
 

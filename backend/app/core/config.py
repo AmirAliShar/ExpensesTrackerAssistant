@@ -37,6 +37,15 @@ class Settings:
     JWT_ALGORITHM: str = os.environ.get("JWT_ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 
+    # Google OAuth 2.0
+    GOOGLE_CLIENT_ID: Optional[str] = os.environ.get("GOOGLE_CLIENT_ID")
+    GOOGLE_CLIENT_SECRET: Optional[str] = os.environ.get("GOOGLE_CLIENT_SECRET")
+    GOOGLE_REDIRECT_URI: str = os.environ.get(
+        "GOOGLE_REDIRECT_URI",
+        "http://localhost:8000/api/auth/google/callback",
+    )
+    FRONTEND_URL: str = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+
     # CORS
     CORS_ORIGINS: List[str] = [
         origin.strip()

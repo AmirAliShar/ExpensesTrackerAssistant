@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, String, cast
-from app.database import Transaction
+from app.database import Transaction, Budget, SavingsGoal
 
 PALETTE_COLORS = [
     "#6366F1", "#EC4899", "#10B981", "#F59E0B", "#8B5CF6",
@@ -138,4 +138,86 @@ def calculate_monthly_report(
         "expense_change_percentage": pct_change,
         "top_categories": [{"category": c, "amount": round(float(a), 2)} for c, a in top_categories],
         "actionable_suggestions": suggestions
+    }
+
+
+def calculate_daily_briefing(db: Session, user_id: int) -> Dict[str, Any]:
+    """Build a deterministic daily briefing exclusively from verified PostgreSQL records."""
+    today = datetime.utcnow().date()
+    yesterday = today - timedelta(days=1)
+    month = today.strftime("%Y-%m")
+
+    yesterday_expenses = db.query(Transaction).filter(
+        Transaction.user_id == user_id,
+        Transaction.type == "expense",
+        Transaction.date == yesterday,
+    ).all()
+    month_expenses = db.query(Transaction).filter(
+        Transaction.user_id == user_id,
+        Transaction.type == "expense",
+        cast(Transaction.date, String).like(f"{month}%"),
+    ).all()
+    budgets = db.query(Budget).filter(
+        Budget.user_id == user_id,
+        Budget.month == month,
+    ).all()
+    goals = db.query(SavingsGoal).filter(SavingsGoal.user_id == user_id).all()
+
+    yesterday_total = sum((t.amount for t in yesterday_expenses), Decimal("0.00"))
+    month_total = sum((t.amount for t in month_expenses), Decimal("0.00"))
+
+    total_limit = sum(
+        (b.monthly_limit for b in budgets if b.category.lower() == "overall"),
+        Decimal("0.00"),
+    )
+    remaining_budget = total_limit - month_total if total_limit > Decimal("0.00") else None
+
+    alerts = []
+    for budget in budgets:
+        spent = month_total if budget.category.lower() == "overall" else sum(
+            (t.amount for t in month_expenses if t.category.title() == budget.category.title()),
+            Decimal("0.00"),
+        )
+        limit_value = budget.monthly_limit
+        if limit_value > Decimal("0.00"):
+            utilization = spent / limit_value
+            if utilization >= Decimal("1"):
+                alerts.append(f"{budget.category} budget is fully utilized or exceeded.")
+            elif utilization >= Decimal("0.80"):
+                alerts.append(f"{budget.category} budget is 80% or more utilized.")
+
+    upcoming_goals = [
+        {
+            "title": goal.title,
+            "target_amount": float(goal.target_amount),
+            "current_amount": float(goal.current_amount),
+            "progress_percentage": round(float(goal.current_amount / goal.target_amount * Decimal("100")), 1)
+            if goal.target_amount > Decimal("0.00") else 0.0,
+        }
+        for goal in goals
+    ]
+
+    summary = (
+        f"Yesterday you spent Rs. {float(yesterday_total):,.2f}. "
+        + (
+            f"You have Rs. {float(remaining_budget):,.2f} remaining in your overall monthly budget."
+            if remaining_budget is not None
+            else "No overall monthly budget is configured."
+        )
+    )
+    if alerts:
+        summary += " " + " ".join(alerts)
+    if upcoming_goals:
+        summary += f" You have {len(upcoming_goals)} savings goal(s) in progress."
+
+    return {
+        "date": today.isoformat(),
+        "yesterday": yesterday.isoformat(),
+        "yesterday_spending": float(yesterday_total),
+        "month": month,
+        "monthly_spending": float(month_total),
+        "remaining_monthly_budget": float(remaining_budget) if remaining_budget is not None else None,
+        "budget_alerts": alerts,
+        "savings_goals": upcoming_goals,
+        "summary": summary,
     }
