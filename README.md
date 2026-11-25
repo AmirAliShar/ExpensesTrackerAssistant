@@ -1,304 +1,368 @@
-# FinPilot AI — Agentic Personal Finance Assistant
+# AI Expense Tracker — Agentic Personal Finance Assistant
 
-FinPilot AI is an enterprise-grade, multi-user, voice-enabled personal finance application powered by **LangChain**, **LangGraph**, **Groq**, **FastMCP**, **FastAPI**, **PostgreSQL**, and a modern **React + TypeScript** frontend.
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 
----
+An intelligent personal finance application that combines income and expense tracking with a conversational AI assistant. Manage transactions, budgets, savings goals, and money lent or borrowed, then ask the assistant to answer questions or carry out supported financial actions in natural language.
 
-## 🚀 Key Architectural Upgrades & Capabilities
+The app stores financial records in PostgreSQL and serves them through a FastAPI backend. The assistant uses structured LangChain tools to connect user requests to backend operations; it does not treat financial actions as generated text. Consequential updates and deletions require confirmation.
 
-1. **Mandatory PostgreSQL Engine & Alembic Migrations**
-   - Authoritative PostgreSQL storage for users, transactions, budgets, savings goals, durable memories, and personal loans.
-   - **No Silent SQLite Fallback:** The backend fails fast with clear, actionable diagnostics if PostgreSQL is unavailable or credentials fail.
-   - Automated Alembic migrations manage database schema versions idempotently.
-   - Exact Decimal currency arithmetic (`Numeric(12, 2)`) avoids floating-point calculation errors.
+## Contents
 
-2. **Strict Multi-User Security & Tenant Isolation**
-   - Cryptographic `bcrypt` password hashing and secure `JWT` authentication.
-   - Every transaction, budget, goal, memory, and personal loan query is strictly scoped to the authenticated user ID (`user_id`).
-   - Cross-tenant access is prohibited at both the API and database levels.
-   - Thread identifiers are automatically scoped to each user (`user_{user_id}_{thread_id}`).
+- [Features](#features)
+- [Technology](#technology)
+- [Architecture](#architecture)
+- [Repository layout](#repository-layout)
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [Configuration](#configuration)
+- [Demo account](#demo-account)
+- [API overview](#api-overview)
+- [Screenshots](#screenshots)
+- [Tests](#tests)
+- [Security and data handling](#security-and-data-handling)
+- [Current limitations and possible next steps](#current-limitations-and-possible-next-steps)
+- [Contributing](#contributing)
+- [License](#license)
 
-3. **Dynamic Model Selection & Groq Fallback Chain**
-   - Dynamic Groq model selection following official LangChain best practices:
-     $$\text{Primary: } \texttt{llama-3.1-8b-instant} \longrightarrow \text{Fallback 1: } \texttt{llama-3.3-70b-versatile} \longrightarrow \text{Fallback 2: } \texttt{openai/gpt-oss-120b}$$
-   - Bounded retries with exponential backoff and randomized jitter for retryable errors (429 Rate Limits, 503 Server Unavailable).
-   - Fast-fails without retry loops on non-retryable errors (401 Unauthorized, 400 Bad Request).
-   - Resilient offline rule engine fallback if credentials are unset or provider services are down.
+## Features
 
-4. **Environment-Driven Agent System Prompts**
-   - Configurable specialist system prompts loaded from environment variables (`AGENT_PROMPTS_FROM_ENV=true`):
-     - `FINANCE_SUPERVISOR_PROMPT`: Intent classification and coordination.
-     - `EXPENSE_AGENT_PROMPT`: Precision categorization and transaction proposals.
-     - `BUDGET_AGENT_PROMPT`: Spending limit velocity and proactive alerts.
-     - `ANALYTICS_AGENT_PROMPT`: Category breakdown and deterministic metrics.
-     - `MEMORY_AGENT_PROMPT`: Durable preference extraction without credentials leakage.
-     - `VOICE_AGENT_PROMPT`: Concise natural language synthesis.
-   - Safe, version-controlled defaults maintained in [`backend/app/agents/prompts/`](file:///e:/Algorithm/AgenticAI/ExpensesTrackerAssistant/backend/app/agents/prompts/).
+### Financial dashboard
 
-5. **Human-in-the-Loop (HITL) Confirmation & Interrupts**
-   - Destructive financial mutations (updating a transaction, deleting a transaction, modifying spending limits) pause for explicit user confirmation.
-   - Returns a structured confirmation proposal (`action_token`, summary, affected record) to the user.
-   - Resumed through `/api/agent/confirm` inside a PostgreSQL transaction with idempotency protection against duplicate execution.
+- Income, expenses, net cash flow (shown as available balance), and savings rate from backend analytics.
+- Expense breakdown by category, recent transaction activity, budget progress, and savings goal progress.
+- Period selection and a database-backed daily briefing with budget alerts.
 
-6. **Voice Interface: Whisper STT & Neural TTS**
-   - Speech-to-Text (STT) powered by Groq-hosted `whisper-large-v3-turbo`.
-   - Text-to-Speech (TTS) synthesis powered by `edge-tts` (or local fallback).
-   - Full microphone permission handling, audio recording, and visual confirmation in the frontend.
+The available balance shown here is calculated as income minus expenses for the selected analytics period. It is not a bank balance and the app does not connect to bank accounts.
 
-7. **Durable PostgreSQL Memory & LangGraph Checkpoints**
-   - State checkpoints stored across server restarts.
-   - Permanent user preferences (e.g. target savings rate, preferred currency) stored in the `user_memories` PostgreSQL table with complete user inspection and deletion controls.
+### Transactions
 
-8. **Personal Lending & Borrowing**
-   - Records personal loans as receivables or liabilities, separate from ordinary income and expenses.
-   - Tracks partial/full repayments with Decimal amounts, row locking, outstanding-balance constraints, and idempotency keys.
-   - The assistant asks for clarification on ambiguous transfers and requires explicit confirmation before creating a loan or repayment.
-   - The **People & Loans** page shows totals, people-wise loan history, statuses, and repayment history.
+- Create, view, edit, and delete income and expense records.
+- Organize records by category and filter or search the records loaded by the frontend.
+- Filter by category, type, date, and amount in the transaction interface.
+- Transaction records are kept distinct from personal loans and repayments.
 
----
+The transaction API supports category, month, type, and limit filters. The current frontend requests a bounded list; it does not provide server-side page navigation.
 
-## 🧠 System Architecture
+### People & Loans
+
+- Record money lent and money borrowed separately from income and expenses.
+- Track original and outstanding amounts, person-wise history, optional due dates, and active, partially paid, or settled status.
+- Record partial or full repayments and view repayment history.
+- Require explicit confirmation before loan creation or repayment through the assistant.
+
+Loan records and repayments use their own database tables and do not create ordinary transaction entries.
+
+### Budgets and savings goals
+
+- Create monthly overall or category budgets and view spending, remaining limits, progress, and 80% / 100% alerts.
+- Create savings goals with target and current amounts and view progress.
+- Delete active or completed savings goals after confirmation.
+
+### AI assistant
+
+The assistant accepts text and voice input. It uses the configured Groq chat model to choose from typed financial tools, and backend services execute those actions against authenticated user data. Supported operations include:
+
+- Create income or expense transactions.
+- Retrieve recent transactions, financial summaries, and budget status.
+- Propose transaction updates and deletions, which are applied only after confirmation.
+- Query personal loan summaries, balances, and history; propose loan creation or repayment with confirmation.
+- Save and retrieve durable user preferences or facts.
+- Maintain conversation history and per-user checkpoint state.
+
+Example requests:
+
+- “Add 1,200 PKR to my food expenses.”
+- “Show my expenses from this month.”
+- “How much did I spend on education?”
+- “Show the outstanding money I lent to people.”
+- “I repaid 500 to Sara for the loan I borrowed.”
+
+The exact interpretation depends on the configured model and conversation context. The assistant uses a local rule-based fallback when model invocation is unavailable; complex language understanding requires a working Groq API key.
+
+## Technology
+
+| Area | Implementation |
+| --- | --- |
+| Frontend | React 19, TypeScript, Vite, custom CSS and CSS variables, React Markdown |
+| Frontend state and routing | React component state; navigation is handled in the app rather than a routing library |
+| Charts | Custom SVG expense breakdown; no charting dependency |
+| Backend API | Python 3.11+, FastAPI, Pydantic |
+| Persistence | PostgreSQL, SQLAlchemy 2, Alembic migrations; decimal `NUMERIC(12,2)` amounts |
+| AI | LangChain tool schemas and `ChatGroq`; configured primary and fallback model candidates |
+| Conversation state | LangGraph PostgreSQL checkpointer when available, with a `MemorySaver` fallback |
+| Authentication | JWT bearer tokens, bcrypt password hashing, optional Google OAuth |
+| Optional tool server | FastMCP over Streamable HTTP |
+| Voice | Groq Whisper transcription and Edge TTS synthesis |
+
+The current assistant orchestration calls a model with structured tools and executes the selected action in backend code. LangGraph is used for conversation checkpoints; this repository does not define a multi-node LangGraph agent workflow.
+
+## Architecture
 
 ```mermaid
-graph TD
-    User([User Voice / Text]) --> ReactApp[React 19 + TypeScript Frontend]
-    ReactApp -->|Bearer JWT / REST| FastAPI[FastAPI Backend - Port 8000]
-    
-    subgraph Multi-User Security & Persistence
-        FastAPI --> Auth[Bcrypt + JWT Authentication]
-        FastAPI --> DB[(PostgreSQL Database - Port 5432)]
-        DB --> Tables[Users • Transactions • Budgets • Goals • Memories • Personal Loans]
-        DB --> Checkpoints[LangGraph Checkpoint Schema]
-    end
-    
-    subgraph Agentic Orchestration Layer
-        FastAPI --> Supervisor[Finance Supervisor Agent]
-        Supervisor --> ExpenseAgent[Expense Specialist]
-        Supervisor --> BudgetAgent[Budget Specialist]
-        Supervisor --> AnalyticsAgent[Analytics Specialist]
-        Supervisor --> MemoryAgent[Memory Specialist]
-    end
-
-    subgraph Resilient Model Layer
-        Supervisor --> ModelFactory[Centralized Model Factory]
-        ModelFactory -->|Primary| Groq1[Groq llama-3.1-8b-instant]
-        ModelFactory -->|Fallback 1| Groq2[Groq llama-3.3-70b-versatile]
-        ModelFactory -->|Fallback 2| Groq3[Groq openai/gpt-oss-120b]
-    end
-
-    subgraph Human-in-the-Loop Safeguards
-        ExpenseAgent -->|Destructive Action| HITL[Confirmation Proposal]
-        HITL -->|Requires Explicit User Confirmation| ReactApp
-        Supervisor -->|Loan Create / Repayment| HITL
-    end
-
-    subgraph Voice Services
-        FastAPI --> WhisperSTT[Groq Whisper Large v3 Turbo]
-        FastAPI --> NeuralTTS[Neural Edge-TTS / Audio Stream]
-    end
+flowchart LR
+    U[User] --> FE[React + TypeScript frontend]
+    FE -->|REST + JWT| API[FastAPI API]
+    API --> AUTH[Authentication and request validation]
+    API --> SERVICES[Analytics, loan, memory and transaction services]
+    SERVICES --> DB[(PostgreSQL)]
+    API --> AGENT[AI request orchestrator]
+    AGENT --> LC[LangChain structured tools]
+    LC --> SERVICES
+    AGENT --> MODEL[Groq model candidates]
+    AGENT --> CP[LangGraph conversation checkpointer]
+    CP --> DB
+    API --> VOICE[Groq Whisper / Edge TTS]
+    MCP[Optional FastMCP server] --> SERVICES
 ```
 
----
+For an AI request, the authenticated API supplies the user's identity, preferred currency, saved memories, and conversation context to the orchestrator. The model returns a structured tool call (or a text response); backend code validates and runs supported actions, then returns a response to the client. Sensitive mutations use a confirmation proposal before execution.
 
-## 📋 Prerequisites
+FastMCP is an optional, separately started server for exposing finance-related tools to MCP clients. It is not required by the React app's normal REST flow.
 
-- **Python:** Version `>= 3.11`
-- **Node.js:** Version `>= 18.x`
-- **PostgreSQL:** Version `>= 14.x` running on port 5432
+## Repository layout
 
----
+```text
+.
+├── backend/
+│   ├── app/
+│   │   ├── agents/        # Tool schemas, orchestration, confirmations and prompts
+│   │   ├── analytics/     # Analytics, reports and daily briefing calculations
+│   │   ├── api/           # FastAPI routes and request/response schemas
+│   │   ├── auth/          # Password/JWT and Google OAuth support
+│   │   ├── core/          # Environment-backed settings
+│   │   ├── database/      # SQLAlchemy engine, models and sessions
+│   │   ├── loans/         # Personal loan and repayment business logic
+│   │   ├── mcp/           # Optional FastMCP server
+│   │   ├── memory/        # Conversation persistence and checkpointer helpers
+│   │   ├── models/        # Groq model selection, retries and fallbacks
+│   │   └── voice/         # Speech-to-text and text-to-speech services
+│   ├── migrations/        # Alembic configuration and schema revisions
+│   ├── tests/             # Backend tests
+│   └── main.py            # Backend launch entry point
+├── frontend/
+│   ├── src/
+│   │   ├── components/    # Dashboard-related pages and feature components
+│   │   ├── api.ts         # Typed frontend API client
+│   │   ├── App.tsx        # Main application and section navigation
+│   │   └── index.css      # Theme tokens and responsive styles
+│   └── package.json
+├── Dashboard/             # Committed UI screenshots
+├── requirements.txt       # Python dependencies
+├── pyproject.toml         # Python project metadata and dependencies
+└── README.md
+```
 
-## ⚙️ Configuration & Environment Setup
+## Requirements
 
-Copy `.env.example` to `.env` in the `backend/` directory (or root):
+- Python 3.11 or newer.
+- Node.js `^20.19.0` or `>=22.12.0` (the Vite version in the frontend lockfile requirement).
+- A running PostgreSQL database and credentials. The backend rejects SQLite; the repository does not enforce a specific PostgreSQL server version.
+- A Groq API key for model-backed assistant responses and Groq Whisper transcription. Basic non-model fallback behavior is available without it.
+- Google OAuth client credentials only if Google sign-in is required.
+
+## Setup
+
+### 1. Clone the repository
 
 ```bash
-cp backend/.env.example backend/.env
+git clone https://github.com/AmirAliShar/ExpensesTrackerAssistant.git
+cd ExpensesTrackerAssistant
 ```
 
-Edit `backend/.env` with your PostgreSQL credentials and Groq API key:
+### 2. Configure PostgreSQL and backend environment
+
+Create a PostgreSQL database and user, then copy the root environment template to the backend directory:
+
+```bash
+# Run in psql as a database administrator; choose your own credentials.
+CREATE DATABASE finpilot;
+```
+
+```powershell
+# From the repository root (PowerShell)
+Copy-Item .env.example backend/.env
+```
+
+Edit `backend/.env` with the database name, username, password, and a strong JWT secret. Set `DATABASE_URL` to a PostgreSQL URL, or leave it empty and configure `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD`. `PGPASSWORD` is required by the current database module.
 
 ```env
-# Mandatory PostgreSQL Configuration
-DATABASE_URL=postgresql+psycopg2://postgres:YOUR_PASSWORD@localhost:5432/LangGraph
 PGHOST=localhost
 PGPORT=5432
-PGDATABASE=DataBaseName
-PGUSER=postgres
-PGPASSWORD=YOUR_PASSWORD
-
-# Groq LLM & Dynamic Fallback
-GROQ_API_KEY=gsk_your_groq_api_key_here
-PRIMARY_CHAT_PROVIDER=groq
-PRIMARY_CHAT_MODEL=llama-3.1-8b-instant
-GROQ_FALLBACK_MODELS=llama-3.3-70b-versatile,openai/gpt-oss-120b
-
-# Voice
-GROQ_STT_MODEL=whisper-large-v3-turbo
-TTS_PROVIDER=edge-tts
-TTS_MODEL=en-US-ChristopherNeural
-
-# Security
-JWT_SECRET_KEY=antigravity_super_secret_jwt_key_2026_finance_assistant
-ACCESS_TOKEN_EXPIRE_MINUTES=1440
+PGDATABASE=finpilot
+PGUSER=your_database_user
+PGPASSWORD=your_database_password
+DATABASE_URL=
+JWT_SECRET_KEY=replace_with_a_long_random_secret
+GROQ_API_KEY=your_groq_api_key
 ```
 
-### Optional Google OAuth 2.0
+### 3. Install and start the backend
 
-Google sign-in is available when these settings are configured in `backend/.env` (or the root `.env`):
+From the `backend/` directory:
 
-```env
-GOOGLE_CLIENT_ID=your-oauth-client-id
-GOOGLE_CLIENT_SECRET=your-oauth-client-secret
-GOOGLE_REDIRECT_URI=http://localhost:8000/api/auth/google/callback
-FRONTEND_URL=http://localhost:5173
+```powershell
+cd backend
+python -m venv .venv
 ```
 
-In Google Cloud Console, register `GOOGLE_REDIRECT_URI` as an Authorized redirect URI for a Web application OAuth client. For production, set the API callback and frontend URLs to their HTTPS public origins. The callback validates OAuth state, ID-token signature/audience/issuer/expiry, nonce, and verified email before issuing the app JWT. Password sign-in does not depend on these settings.
+Activate the virtual environment, then install the repository's Python requirements:
 
----
-
-## 🗄️ Database Initialization & Migrations
-
-### 1. Create the PostgreSQL Database
-If the database does not already exist on your PostgreSQL server, run in `psql` or pgAdmin:
-
-```sql
-CREATE DATABASE "LangGraph";
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r ..\requirements.txt
 ```
-
-### 2. Run Database Migrations (Alembic)
-Execute the initial schema migration from the `backend/` directory:
 
 ```bash
-cd backend
+# macOS / Linux, from backend/
+source .venv/bin/activate
+python -m pip install -r ../requirements.txt
+```
+
+Apply database migrations, then launch the FastAPI application:
+
+```bash
 alembic upgrade head
-```
-
-The database schema will be initialized idempotently.
-
----
-
-## 🚀 Running the Application
-
-### 1. Start the Backend API Server
-```bash
-cd backend
 python main.py
 ```
-*The FastAPI application will start on `http://localhost:8000`.*
-*Interactive OpenAPI documentation is available at `http://localhost:8000/docs`.*
 
-### 2. Start the FastMCP Server (Optional)
+The API runs at `http://localhost:8000`. FastAPI's interactive docs are at `http://localhost:8000/docs`; its OpenAPI schema is at `http://localhost:8000/openapi.json`. Startup also calls SQLAlchemy `create_all()` for current models and seeds a demo account if one does not already exist.
+
+### 4. Install and start the frontend
+
+Open a second terminal:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Vite prints the local frontend URL (normally `http://localhost:5173`). The API client defaults to `http://localhost:8000`. To point it elsewhere, create `frontend/.env.local` with:
+
+```env
+VITE_API_BASE_URL=https://your-api-host
+```
+
+### 5. Optional FastMCP server
+
+With the backend environment configured and PostgreSQL available, start a separate process:
+
 ```bash
 cd backend
 python -m app.mcp.server
 ```
-*Listens on `http://localhost:8001/mcp`.*
 
-### 3. Start the Frontend Development Server
+The server uses Streamable HTTP on port `8001` and the configured MCP URL defaults to `http://localhost:8001/mcp`.
+
+## Configuration
+
+The supported environment template is [`.env.example`](.env.example). Copy it to `backend/.env`; do not commit populated environment files.
+
+| Variable | Purpose |
+| --- | --- |
+| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` | PostgreSQL connection settings; password is required |
+| `DATABASE_URL` | Optional full PostgreSQL URL; takes precedence over the individual connection fields |
+| `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` | JWT signing and expiration settings |
+| `GROQ_API_KEY` | Groq chat model and speech transcription access |
+| `PRIMARY_CHAT_PROVIDER`, `PRIMARY_CHAT_MODEL`, `GROQ_FALLBACK_MODELS` | Model provider and candidate order |
+| `MODEL_MAX_RETRIES`, `MODEL_TIMEOUT_SECONDS` | Model call retry and timeout settings |
+| `GROQ_STT_MODEL`, `TTS_PROVIDER`, `TTS_MODEL` | Voice service configuration |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `FRONTEND_URL` | Optional Google OAuth setup |
+| `CORS_ORIGINS` | Comma-separated allowed browser origins |
+| `MCP_SERVER_PORT`, `MCP_SERVER_URL` | MCP-related settings (the current server launch uses port 8001) |
+| `AGENT_PROMPTS_FROM_ENV`, `FINANCE_SUPERVISOR_PROMPT`, `EXPENSE_AGENT_PROMPT`, `BUDGET_AGENT_PROMPT`, `ANALYTICS_AGENT_PROMPT`, `MEMORY_AGENT_PROMPT`, `VOICE_AGENT_PROMPT` | Optional prompt overrides; defaults live under `backend/app/agents/prompts/` |
+
+Create a Groq API key in the Groq developer console if you want model-backed chat or transcription. For Google sign-in, create OAuth credentials in Google Cloud and register the same callback URL as `GOOGLE_REDIRECT_URI`.
+
+## Demo account
+
+On startup, the backend creates a demo account and sample records if `demo@antigravity.io` is not present:
+
+- Email: `demo@antigravity.io`
+- Password: `password123`
+
+These credentials are for local demonstration only. Change or remove the seeded demo account and use a strong `JWT_SECRET_KEY` before exposing an instance to other users.
+
+## API overview
+
+Except for registration, login, OAuth entry/callback, and `/health`, API routes require the authenticated user's bearer token. The frontend stores the token and sends it with API requests.
+
+| Area | Methods and paths | Authentication | Purpose |
+| --- | --- | --- | --- |
+| Health | `GET /health` | No | Service status |
+| Auth | `POST /api/auth/register`, `POST /api/auth/login` | No | Create an account or obtain a token |
+| Auth | `GET /api/auth/google/start`, `GET /api/auth/google/callback` | OAuth flow | Optional Google sign-in |
+| Profile | `GET /api/auth/me` | Yes | Current account |
+| Transactions | `GET`, `POST /api/transactions`; `PUT`, `DELETE /api/transactions/{tx_id}` | Yes | List/filter and manage transactions |
+| Analytics and reports | `GET /api/analytics/summary`, `GET /api/reports/monthly`, `GET /api/reports/csv`, `GET /api/briefings/daily` | Yes | Summaries, exports, and briefing |
+| Budgets | `GET`, `POST /api/budgets`; `DELETE /api/budgets/{budget_id}` | Yes | Read, create, and delete budgets |
+| Savings goals | `GET`, `POST /api/goals`; `DELETE /api/goals/{goal_id}` | Yes | Read, create, and delete goals |
+| Personal loans | `GET /api/loans`, `/api/loans/summary`, `/api/loans/balance`, `/api/loans/{loan_id}/history`; `POST /api/loans`, `/api/loans/{loan_id}/repayments` | Yes | Loans and repayment history; writes require confirmation |
+| AI assistant | `POST /api/agent/query`, `POST /api/agent/query/stream`, `POST /api/agent/confirm`; `GET` / `DELETE /api/agent/history` | Yes | Chat, confirmation, and history |
+| Conversations | `GET`, `POST /api/conversations`; `PATCH`, `DELETE /api/conversations/{conversation_id}` | Yes | Persist and manage conversations |
+| Memories | `GET`, `POST /api/memories`; `DELETE /api/memories/{memory_id}`, `DELETE /api/memories` | Yes | Manage durable assistant memories |
+| Voice | `POST /api/voice/transcribe`, `POST /api/voice/synthesize` | Yes | Speech-to-text and text-to-speech |
+
+Interactive API documentation is available at `/docs` while the backend is running. The optional MCP server exposes tools over its separate Streamable HTTP endpoint rather than under `/api`.
+
+## Screenshots
+
+The repository includes five captures in [`Dashboard/`](Dashboard/). They show the earlier six-item navigation, before the current four-section navigation was introduced; page examples remain useful for the visual design but do not represent the current nav labels.
+
+| View | Capture |
+| --- | --- |
+| Dashboard overview | ![Dashboard overview](Dashboard/1.png) |
+| Expense breakdown and recent activity | ![Dashboard breakdown and activity](Dashboard/2.png) |
+| Transactions | ![Transactions page](Dashboard/3.png) |
+| AI assistant | ![AI assistant conversation](Dashboard/4.png) |
+| Budgets and savings goals | ![Budgets and savings goals](Dashboard/5.png) |
+
+There is no People & Loans screenshot or live demo link in the repository at this time.
+
+## Tests
+
+Run backend tests from the `backend/` directory with the virtual environment activated:
+
 ```bash
-cd frontend
-npm install
-npm run dev
-```
-*The React + Vite frontend will be available at `http://localhost:5173`.*
-
----
-
-## 👤 Initial User Account & Authentication
-
-Upon initial startup with PostgreSQL, a default demo account is safely seeded:
-- **Email:** `demo@antigravity.io`
-- **Password:** `password123`
-
-You can also register a new user anytime directly through the UI modal or the `/api/auth/register` endpoint.
-
----
-
-## 🧪 Automated Testing
-
-FinPilot AI includes a comprehensive test suite in `backend/tests/`:
-
-```bash
-cd backend
 python run_tests.py
 ```
 
-Or using `pytest`:
+Or run pytest directly:
 
 ```bash
-cd backend
 pytest -v tests/
 ```
 
-### Test Coverage Summary:
-- `test_database.py`: PostgreSQL URL verification, rejection of SQLite, and Decimal column checks.
-- `test_auth_isolation.py`: Email normalization, Bcrypt password hashing, JWT security, multi-tenant isolation, and thread ID scoping.
-- `test_models_fallback.py`: Model candidate order, error classification (401 vs 429), fast-fail without endless looping, and fallback chaining.
-- `test_prompts.py`: Role-specific default prompts and environment variable overrides.
-- `test_hitl_confirmation.py`: Human-in-the-Loop proposal generation, cancellation without database side effects, and idempotency protection.
-- `test_voice_and_tools.py`: Whisper audio validation and deterministic financial analytics calculations.
-- `test_daily_briefing_conversations.py`: Database-grounded briefings and cross-user conversation isolation.
-- `test_personal_loans.py`: Decimal accounting, partial/full repayment, idempotency, same-name handling, user isolation, intent clarification, and confirmed assistant writes.
-
----
-
-## Daily-Use Conversation Persistence
-
-Persistent conversations are stored in PostgreSQL in `conversations` and `conversation_messages`.
-Each conversation remains isolated by authenticated `user_id`, while LangGraph checkpoints continue to
-carry workflow state for active threads.
-
-Available conversation APIs:
-
-```text
-GET    /api/conversations
-POST   /api/conversations
-PATCH  /api/conversations/{conversation_id}
-DELETE /api/conversations/{conversation_id}
-POST   /api/agent/query/stream
-GET    /api/agent/history
-DELETE /api/agent/history
-GET    /api/briefings/daily
-```
-
-Personal Lending & Borrowing APIs:
-
-```text
-GET    /api/loans/summary
-GET    /api/loans?loan_type=lent&status=active&limit=100&offset=0
-GET    /api/loans/balance?person_name=Arslan&loan_type=lent
-GET    /api/loans/{loan_id}/history
-POST   /api/loans                         (requires confirmed: true)
-POST   /api/loans/{loan_id}/repayments    (requires confirmed: true and idempotency_key)
-```
-
-The migration `003_personal_loans` creates the `personal_loans` and `loan_repayments` tables.
-Run `alembic upgrade head` from `backend/` after deploying this feature. Loan principal and
-repayments are not written to the regular `transactions` table.
-
-Apply the migration after upgrading:
+Some database-backed tests use the configured PostgreSQL connection, so PostgreSQL and `backend/.env` must be available for the full suite. Build the frontend with:
 
 ```bash
-cd backend
-alembic upgrade head
+cd frontend
+npm run build
 ```
 
-The conversation migration is compatible with databases initialized by `Base.metadata.create_all()`
-and will create missing conversation tables without changing existing financial tables.
+## Security and data handling
 
----
+- Passwords are hashed with bcrypt; authenticated API calls use JWT bearer tokens.
+- Financial records are queried with the authenticated user ID. Personal loans and repayments are stored separately from ordinary transactions.
+- Request and response bodies use Pydantic schemas, and monetary database fields use PostgreSQL `NUMERIC(12,2)`.
+- Google OAuth is optional and validates the returned ID token and nonce.
+- Destructive assistant operations use confirmation proposals before mutation.
+- Configure a strong, unique `JWT_SECRET_KEY`, restrict `CORS_ORIGINS`, protect database credentials, and use HTTPS in deployments. The application has not been independently audited or hardened for production.
 
-## 🛡️ Human-in-the-Loop Confirmation Flow
+## Current limitations and possible next steps
 
-When a user commands a consequential financial action:
-1. **User Request:** *"Delete transaction #4"*
-2. **Proposal Generation:** The Expense specialist retrieves the record belonging to the authenticated user, verifies ownership, and issues a pending proposal (`action_token`).
-3. **Graph Pause:** Execution halts without altering the database.
-4. **UI Modal / Card:** The frontend renders an interactive card:
-   ```text
-   ⚠️ Confirmation Required: Delete transaction #4 (Expense Rs. 4,200 Food on 2026-10-10)
-   [✓ Confirm Action]   [✕ Cancel]
-   ```
-5. **Resume & Idempotency:** Clicking **Confirm** triggers `/api/agent/confirm`. The transaction is removed inside a database transaction, and the proposal token is retired.
+- Savings goals can be created, viewed, and deleted, but the current API has no goal update endpoint and the frontend does not expose goal editing or contribution updates. Although the database supports a target date, the current goal form does not collect it.
+- Transactions are loaded in a bounded list and filtered client-side; server-side pagination is not implemented.
+- The committed screenshots predate the current navigation update, and the repository does not include a deployed demo.
+
+## Contributing
+
+Contributions are welcome. For a change, open an issue describing the problem or proposal, keep backend changes tenant-scoped, and include or update tests for changed behavior. Run the relevant backend tests and `npm run build` before opening a pull request.
+
+## License
+
+No license file is currently included. Contact the repository owner for permission before redistributing or reusing this project.
