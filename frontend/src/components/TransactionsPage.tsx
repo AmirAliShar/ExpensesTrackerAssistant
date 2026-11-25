@@ -5,6 +5,7 @@ interface TransactionsPageProps {
   transactions: Transaction[];
   onRefresh: () => void;
   currency?: string;
+  view?: 'all' | 'income' | 'expenses';
 }
 
 const EXPENSE_CATEGORIES = [
@@ -36,9 +37,15 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
   transactions,
   onRefresh,
   currency = 'PKR',
+  view = 'all',
 }) => {
   const [filterCategory, setFilterCategory] = useState('All');
   const [filterType, setFilterType] = useState('all');
+  const [search, setSearch] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [minAmount, setMinAmount] = useState('');
+  const [maxAmount, setMaxAmount] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
 
@@ -80,8 +87,14 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
   };
 
   const filteredTransactions = transactions.filter((t) => {
+    const effectiveType = view === 'income' ? 'income' : view === 'expenses' ? 'expense' : filterType;
+    if (effectiveType !== 'all' && t.type !== effectiveType) return false;
     if (filterCategory !== 'All' && t.category.toLowerCase() !== filterCategory.toLowerCase()) return false;
-    if (filterType !== 'all' && t.type !== filterType) return false;
+    if (search && !`${t.category} ${t.description || ''}`.toLowerCase().includes(search.toLowerCase())) return false;
+    if (fromDate && t.date < fromDate) return false;
+    if (toDate && t.date > toDate) return false;
+    if (minAmount && t.amount < Number(minAmount)) return false;
+    if (maxAmount && t.amount > Number(maxAmount)) return false;
     return true;
   });
 
@@ -188,7 +201,7 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px' }}>
         <div>
           <h2 style={{ fontSize: 'clamp(1.3rem, 3vw, 1.6rem)', fontWeight: 800, color: 'var(--text-main)' }}>
-            Transactions Ledger
+            {view === 'income' ? 'Income' : view === 'expenses' ? 'Expenses' : 'All Transactions'}
           </h2>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
             Authoritative transactional history backed by PostgreSQL.
@@ -239,7 +252,12 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
         }}
       >
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', flex: 1 }}>
-          <select
+          <input aria-label="Search transactions" placeholder="Search records" value={search} onChange={e => setSearch(e.target.value)} style={{ padding: '9px 12px', flex: '1 1 180px' }} />
+          <input aria-label="From date" type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} style={{ padding: '9px 12px', flex: '1 1 140px' }} />
+          <input aria-label="To date" type="date" value={toDate} onChange={e => setToDate(e.target.value)} style={{ padding: '9px 12px', flex: '1 1 140px' }} />
+          <input aria-label="Minimum amount" type="number" min="0" placeholder="Min amount" value={minAmount} onChange={e => setMinAmount(e.target.value)} style={{ padding: '9px 12px', flex: '1 1 120px' }} />
+          <input aria-label="Maximum amount" type="number" min="0" placeholder="Max amount" value={maxAmount} onChange={e => setMaxAmount(e.target.value)} style={{ padding: '9px 12px', flex: '1 1 120px' }} />
+          {view === 'all' && <select
             value={filterCategory}
             onChange={(e) => setFilterCategory(e.target.value)}
             style={{
@@ -275,7 +293,7 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
                 </optgroup>
               </>
             )}
-          </select>
+          </select>}
 
           <select
             value={filterType}

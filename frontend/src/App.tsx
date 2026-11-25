@@ -18,11 +18,39 @@ import { SettingsPage } from './components/SettingsPage';
 import { AuthModal } from './components/AuthModal';
 import { PeopleLoansPage } from './components/PeopleLoansPage';
 
+function SecondaryNav({ items, active, onSelect }: { items: [string, string][]; active: string; onSelect: (id: string) => void }) {
+  return <nav className="section-nav" aria-label="Section navigation">{items.map(([id, label]) => <button key={id} className={active === id ? 'section-nav-active' : ''} aria-current={active === id ? 'page' : undefined} onClick={() => onSelect(id)}>{label}</button>)}</nav>;
+}
+
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'assistant' | 'budgets' | 'loans' | 'settings'>('dashboard');
+  const routeFromPath = () => {
+    const path = window.location.pathname;
+    if (path === '/loans') return { tab: 'transactions' as const, sub: 'people-loans' };
+    if (path === '/budgets') return { tab: 'planning' as const, sub: 'budgets' };
+    if (path === '/goals') return { tab: 'planning' as const, sub: 'goals' };
+    if (path === '/assistant') return { tab: 'assistant' as const, sub: '' };
+    if (path.startsWith('/transactions/')) return { tab: 'transactions' as const, sub: path.split('/')[2] || 'all' };
+    if (path.startsWith('/planning/')) return { tab: 'planning' as const, sub: path.split('/')[2] || 'budgets' };
+    if (path === '/transactions') return { tab: 'transactions' as const, sub: 'all' };
+    if (path === '/planning') return { tab: 'planning' as const, sub: 'budgets' };
+    if (path === '/ai-assistant') return { tab: 'assistant' as const, sub: '' };
+    if (path === '/settings') return { tab: 'settings' as const, sub: '' };
+    return { tab: 'dashboard' as const, sub: '' };
+  };
+  const initialRoute = routeFromPath();
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions' | 'assistant' | 'planning' | 'settings'>(initialRoute.tab);
+  const [subTab, setSubTab] = useState(initialRoute.sub);
+  const [profileOpen, setProfileOpen] = useState(false);
+  useEffect(() => {
+    const path = window.location.pathname;
+    if (['/loans', '/budgets', '/goals', '/assistant'].includes(path)) {
+      const canonical = path === '/loans' ? '/transactions/people-loans' : path === '/budgets' ? '/planning/budgets' : path === '/goals' ? '/planning/goals' : '/ai-assistant';
+      window.history.replaceState({}, '', canonical);
+    }
+  }, []);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Theme state with localStorage persistence and system theme detection
@@ -57,6 +85,20 @@ export function App() {
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   };
+
+  const navigate = (tab: typeof activeTab, sub = '') => {
+    setActiveTab(tab);
+    setSubTab(sub);
+    setMobileMenuOpen(false);
+    const path = tab === 'dashboard' ? '/dashboard' : tab === 'transactions' ? `/transactions${sub && sub !== 'all' ? `/${sub}` : ''}` : tab === 'planning' ? `/planning/${sub || 'budgets'}` : tab === 'assistant' ? '/ai-assistant' : '/settings';
+    if (window.location.pathname !== path) window.history.pushState({}, '', path);
+  };
+
+  useEffect(() => {
+    const onPopState = () => { const route = routeFromPath(); setActiveTab(route.tab); setSubTab(route.sub); };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   // Generate selectable months dynamically from current date + recorded transactions
   const availableMonths = React.useMemo(() => {
@@ -167,13 +209,11 @@ export function App() {
     loadAllData(newMonth);
   };
 
-  const navItems = [
+  const navItems: { id: 'dashboard' | 'transactions' | 'planning' | 'assistant'; label: string; icon: string }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
     { id: 'transactions', label: 'Transactions', icon: '💳' },
+    { id: 'planning', label: 'Planning', icon: '🎯' },
     { id: 'assistant', label: 'AI Assistant', icon: '⚡' },
-    { id: 'budgets', label: 'Budgets & Goals', icon: '🎯' },
-    { id: 'loans', label: 'People & Loans', icon: '🤝' },
-    { id: 'settings', label: 'Settings', icon: '⚙️' },
   ];
 
   return (
@@ -201,7 +241,7 @@ export function App() {
       >
         {/* App Branding */}
         <div
-          onClick={() => setActiveTab('dashboard')}
+          onClick={() => navigate('dashboard')}
           style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}
         >
           <div
@@ -223,7 +263,7 @@ export function App() {
           </div>
           <div>
             <h1 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', letterSpacing: '-0.02em', lineHeight: 1.2 }}>
-              AI Expense Tracker
+              PaisaPilot
             </h1>
             <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Agentic Personal Finance Assistant</p>
           </div>
@@ -243,7 +283,7 @@ export function App() {
           {navItems.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
+              onClick={() => navigate(tab.id, tab.id === 'transactions' ? 'all' : tab.id === 'planning' ? 'budgets' : '')}
               style={{
                 padding: '8px 14px',
                 borderRadius: '8px',
@@ -264,6 +304,7 @@ export function App() {
               <span>{tab.label}</span>
             </button>
           ))}
+          <button className="mobile-settings-link" onClick={() => navigate('settings')}>⚙️ Settings & Preferences</button>
         </nav>
 
         {/* Right Section: Theme Toggle, User Account & Mobile Hamburger */}
@@ -295,17 +336,10 @@ export function App() {
           </button>
 
           {/* Desktop User Account Controls */}
-          <div className="desktop-only" style={{ alignItems: 'center', gap: '10px' }}>
+          <div className="desktop-only" style={{ alignItems: 'center', gap: '10px', position: 'relative' }}>
             {user ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-main)' }}>{user.full_name || user.email}</div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--accent-emerald)', fontWeight: 600 }}>Authenticated</div>
-                </div>
-                <button onClick={handleLogout} className="btn-secondary" style={{ padding: '6px 12px', fontSize: '0.78rem', minHeight: '34px' }}>
-                  Sign Out
-                </button>
-              </div>
+              <><button onClick={() => setProfileOpen(!profileOpen)} className="btn-secondary profile-trigger" aria-expanded={profileOpen}>👤 {user.full_name || user.email}</button>
+                {profileOpen && <div className="profile-menu"><div className="profile-menu-user">{user.email}</div><button onClick={() => { navigate('settings'); setProfileOpen(false); }}>Account / Profile</button><button onClick={() => { navigate('settings'); setProfileOpen(false); }}>Settings & Preferences</button><button onClick={toggleTheme}>Theme: {theme}</button><button onClick={handleLogout}>Sign out</button></div>}</>
             ) : (
               <button onClick={() => setShowAuthModal(true)} className="btn-primary" style={{ padding: '6px 14px', fontSize: '0.82rem', minHeight: '36px' }}>
                 Sign In
@@ -359,8 +393,7 @@ export function App() {
             <button
               key={tab.id}
               onClick={() => {
-                setActiveTab(tab.id as any);
-                setMobileMenuOpen(false);
+                navigate(tab.id, tab.id === 'transactions' ? 'all' : tab.id === 'planning' ? 'budgets' : '');
               }}
               style={{
                 width: '100%',
@@ -570,12 +603,36 @@ export function App() {
               />
             </div>
 
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: '16px' }}>
+              <section className="glass-card" style={{ padding: 'clamp(16px, 3vw, 22px)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>Budget Progress</h3>
+                  <button onClick={() => navigate('planning', 'budgets')} style={{ border: 0, background: 'none', color: 'var(--accent-blue-text)', cursor: 'pointer' }}>View budgets →</button>
+                </div>
+                {budgets.length === 0 ? <p style={{ color: 'var(--text-muted)', fontSize: '.85rem' }}>No budgets for this period yet.</p> : budgets.map(b => <div key={b.id} style={{ marginBottom: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '.84rem', marginBottom: '6px' }}><strong>{b.category}</strong><span style={{ color: 'var(--text-muted)' }}>{b.utilization_percentage.toFixed(1)}% used</span></div>
+                  <div aria-label={`${b.category} budget ${b.utilization_percentage.toFixed(1)}% used`} role="img" style={{ height: '7px', background: 'var(--border-subtle)', borderRadius: '9px', overflow: 'hidden' }}><div style={{ height: '100%', width: `${Math.min(b.utilization_percentage, 100)}%`, background: b.utilization_percentage >= 100 ? 'var(--accent-rose)' : 'var(--primary-blue)' }} /></div>
+                  <div style={{ marginTop: '4px', fontSize: '.73rem', color: 'var(--text-muted)' }}>{currency} {b.spent.toLocaleString()} spent of {currency} {b.monthly_limit.toLocaleString()}</div>
+                </div>)}
+              </section>
+              <section className="glass-card" style={{ padding: 'clamp(16px, 3vw, 22px)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>Savings Goals</h3>
+                  <button onClick={() => navigate('planning', 'goals')} style={{ border: 0, background: 'none', color: 'var(--accent-blue-text)', cursor: 'pointer' }}>View goals →</button>
+                </div>
+                {goals.length === 0 ? <p style={{ color: 'var(--text-muted)', fontSize: '.85rem' }}>No savings goals yet.</p> : goals.slice(0, 4).map(g => <div key={g.id} style={{ marginBottom: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '.84rem', marginBottom: '6px' }}><strong>{g.title}</strong><span style={{ color: 'var(--text-muted)' }}>{g.progress_percentage.toFixed(1)}%</span></div>
+                  <div style={{ height: '7px', background: 'var(--border-subtle)', borderRadius: '9px', overflow: 'hidden' }}><div style={{ height: '100%', width: `${Math.min(g.progress_percentage, 100)}%`, background: 'var(--accent-emerald)' }} /></div>
+                </div>)}
+              </section>
+            </div>
+
             {/* Recent Transactions Activity List (Uncluttered, No Permanent Edit/Delete Icons) */}
             <div className="glass-card" style={{ padding: 'clamp(16px, 3vw, 22px)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
                 <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-main)' }}>Recent Activity</h3>
                 <button
-                  onClick={() => setActiveTab('transactions')}
+                  onClick={() => navigate('transactions', 'all')}
                   style={{
                     background: 'none',
                     border: 'none',
@@ -647,11 +704,14 @@ export function App() {
 
         {/* TAB 2: TRANSACTIONS */}
         {activeTab === 'transactions' && (
-          <TransactionsPage
+          <><SecondaryNav items={[['all','All Transactions'],['income','Income'],['expenses','Expenses'],['people-loans','People & Loans']]} active={subTab || 'all'} onSelect={(s) => navigate('transactions', s)} />
+          {subTab === 'people-loans' ? <PeopleLoansPage currency={currency} /> : <TransactionsPage
             transactions={transactions}
             onRefresh={() => loadAllData()}
             currency={currency}
+            view={subTab === 'income' || subTab === 'expenses' ? subTab : 'all'}
           />
+          }</>
         )}
 
         {/* TAB 3: AI ASSISTANT & VOICE */}
@@ -660,16 +720,16 @@ export function App() {
         )}
 
         {/* TAB 4: BUDGETS & SAVINGS GOALS */}
-        {activeTab === 'budgets' && (
-          <BudgetsPage
+        {activeTab === 'planning' && (
+          <><SecondaryNav items={ [['budgets','Budgets'],['goals','Savings Goals']] } active={subTab || 'budgets'} onSelect={(s) => navigate('planning', s)} /><BudgetsPage
             budgets={budgets}
             goals={goals}
             onRefresh={() => loadAllData()}
             currency={currency}
+            view={subTab === 'goals' ? 'goals' : 'budgets'}
           />
+          </>
         )}
-
-        {activeTab === 'loans' && <PeopleLoansPage currency={currency} />}
 
         {/* TAB 6: SETTINGS & LONG-TERM MEMORY */}
         {activeTab === 'settings' && (
@@ -682,6 +742,10 @@ export function App() {
           />
         )}
       </main>
+
+      <nav className="mobile-bottom-nav" aria-label="Primary navigation">
+        {navItems.map(item => <button key={item.id} className={activeTab === item.id ? 'mobile-nav-active' : ''} onClick={() => navigate(item.id, item.id === 'transactions' ? 'all' : item.id === 'planning' ? 'budgets' : '')} aria-current={activeTab === item.id ? 'page' : undefined}><span>{item.icon}</span><small>{item.label === 'AI Assistant' ? 'Assistant' : item.label}</small></button>)}
+      </nav>
 
       {/* Auth Modal */}
       {showAuthModal && (

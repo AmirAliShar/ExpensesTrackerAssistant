@@ -6,6 +6,7 @@ interface BudgetsPageProps {
   goals: SavingsGoal[];
   onRefresh: () => void;
   currency?: string;
+  view?: 'budgets' | 'goals';
 }
 
 export const BudgetsPage: React.FC<BudgetsPageProps> = ({
@@ -13,9 +14,12 @@ export const BudgetsPage: React.FC<BudgetsPageProps> = ({
   goals,
   onRefresh,
   currency = 'PKR',
+  view = 'budgets',
 }) => {
   const [showBudgetModal, setShowBudgetModal] = useState(false);
   const [showGoalModal, setShowGoalModal] = useState(false);
+  const [deletingGoal, setDeletingGoal] = useState<SavingsGoal | null>(null);
+  const [goalMessage, setGoalMessage] = useState('');
 
   // Budget form
   const [bCategory, setBCategory] = useState('Food');
@@ -77,9 +81,23 @@ export const BudgetsPage: React.FC<BudgetsPageProps> = ({
     }
   };
 
+  const handleDeleteGoal = async () => {
+    if (!deletingGoal) return;
+    const goalId = deletingGoal.id;
+    try {
+      await api.deleteGoal(goalId);
+      setDeletingGoal(null);
+      setGoalMessage('Savings goal deleted.');
+      onRefresh();
+    } catch (err: any) {
+      alert(err.message || 'Error deleting savings goal');
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
       {/* Monthly Budgets Section */}
+      {view === 'budgets' && <>
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
           <div>
@@ -148,7 +166,10 @@ export const BudgetsPage: React.FC<BudgetsPageProps> = ({
         </div>
       </div>
 
+      </>}
       {/* Savings Goals Section */}
+      {view === 'goals' && <>
+      {goalMessage && <div role="status" className="glass-card" style={{ padding: '10px 14px', color: 'var(--accent-emerald)' }}>{goalMessage}<button onClick={() => setGoalMessage('')} aria-label="Dismiss notification" style={{ float: 'right', background: 'none', border: 0, color: 'inherit', cursor: 'pointer' }}>×</button></div>}
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
           <div>
@@ -163,8 +184,11 @@ export const BudgetsPage: React.FC<BudgetsPageProps> = ({
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
           {goals.map((g) => (
             <div key={g.id} className="glass-card" style={{ padding: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
               <div style={{ fontWeight: 700, fontSize: '1.05rem', color: 'var(--text-main)', marginBottom: '8px' }}>
                 🎯 {g.title}
+              </div>
+              <button type="button" className="btn-secondary" onClick={() => { setGoalMessage(''); setDeletingGoal(g); }} aria-label={`Delete savings goal ${g.title}`} style={{ minHeight: '34px', padding: '5px 9px', color: 'var(--accent-rose)' }}>Delete</button>
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '10px' }}>
@@ -197,7 +221,9 @@ export const BudgetsPage: React.FC<BudgetsPageProps> = ({
         </div>
       </div>
 
+      </>}
       {/* Create Budget Modal */}
+      {view === 'budgets' && <>
       {showBudgetModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: '20px' }}>
           <div className="glass-card responsive-modal-content" style={{ width: '100%', maxWidth: '400px', padding: '28px', background: 'var(--bg-modal)', border: '1px solid var(--border-medium)', boxShadow: 'var(--shadow-lg)' }}>
@@ -246,7 +272,9 @@ export const BudgetsPage: React.FC<BudgetsPageProps> = ({
         </div>
       )}
 
+      </>}
       {/* Create Goal Modal */}
+      {view === 'goals' && <>
       {showGoalModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: '20px' }}>
           <div className="glass-card responsive-modal-content" style={{ width: '100%', maxWidth: '400px', padding: '28px', background: 'var(--bg-modal)', border: '1px solid var(--border-medium)', boxShadow: 'var(--shadow-lg)' }}>
@@ -295,6 +323,18 @@ export const BudgetsPage: React.FC<BudgetsPageProps> = ({
           </div>
         </div>
       )}
+
+      {deletingGoal && <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeletingGoal(null); }} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(5px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 110, padding: '18px' }}>
+        <section role="dialog" aria-modal="true" aria-labelledby="delete-goal-title" aria-describedby="delete-goal-description" className="glass-card" style={{ width: '100%', maxWidth: '420px', padding: '24px', background: 'var(--bg-modal)' }}>
+          <h3 id="delete-goal-title" style={{ fontSize: '1.15rem', marginBottom: '8px' }}>Delete Savings Goal?</h3>
+          <p id="delete-goal-description" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>Are you sure you want to delete this savings goal? This action cannot be undone.</p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '22px' }}>
+            <button type="button" className="btn-secondary" onClick={() => setDeletingGoal(null)}>Cancel</button>
+            <button type="button" className="btn-primary" onClick={handleDeleteGoal} style={{ background: 'var(--accent-rose)' }}>Delete Goal</button>
+          </div>
+        </section>
+      </div>}
+      </>}
     </div>
   );
 };

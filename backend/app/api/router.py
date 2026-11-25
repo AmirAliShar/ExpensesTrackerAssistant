@@ -47,6 +47,7 @@ from app.analytics import (
     calculate_analytics_summary,
     calculate_monthly_report,
     calculate_daily_briefing,
+    calculate_monthly_budget_usage,
 )
 from app.agents.orchestrator import run_finpilot_agent
 from app.agents.confirmation import execute_confirmed_action
@@ -521,24 +522,12 @@ def get_budgets(
     current_user: User = Depends(get_current_user),
 ):
     curr_month = month or datetime.utcnow().strftime("%Y-%m")
-    budgets = db.query(Budget).filter(Budget.user_id == current_user.id).all()
-
-    tx_query = db.query(Transaction).filter(
-        Transaction.user_id == current_user.id,
-        Transaction.type == "expense",
-        cast(Transaction.date, String).like(f"{curr_month}%"),
-    ).all()
-
-    total_expense = sum(float(t.amount) for t in tx_query)
-    cat_spending = {}
-    for t in tx_query:
-        cat_spending[t.category.title()] = cat_spending.get(t.category.title(), 0.0) + float(t.amount)
-
     res = []
-    for b in budgets:
+    for usage in calculate_monthly_budget_usage(db, current_user.id, curr_month):
+        b = usage["budget"]
         limit_val = float(b.monthly_limit)
-        spent = total_expense if b.category.lower() == "overall" else cat_spending.get(b.category.title(), 0.0)
-        util = round((spent / limit_val * 100.0), 1) if limit_val > 0 else 0.0
+        spent = float(usage["spent"])
+        util = usage["utilization_percentage"]
         status_flag = "danger" if util >= 100 else ("warning" if util >= 80 else "safe")
         res.append(BudgetOut(
             id=b.id,
@@ -647,6 +636,23 @@ def create_goal(
         progress_percentage=pct,
         target_date=None,
     )
+
+
+@router.delete("/goals/{goal_id}")
+def delete_goal(
+    goal_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    goal = db.query(SavingsGoal).filter(
+        SavingsGoal.id == goal_id,
+        SavingsGoal.user_id == current_user.id,
+    ).first()
+    if not goal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Savings goal not found")
+    db.delete(goal)
+    db.commit()
+    return {"status": "success", "message": "Savings goal deleted"}
 
 
 # --- Long-Term Memory ---

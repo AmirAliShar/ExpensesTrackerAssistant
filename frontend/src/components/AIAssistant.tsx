@@ -402,7 +402,7 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
             ⚡
           </div>
           <div>
-            <div style={{ fontWeight: 700, fontSize: '0.98rem', color: 'var(--text-main)' }}>AI Expense Tracker Assistant</div>
+            <div style={{ fontWeight: 700, fontSize: '0.98rem', color: 'var(--text-main)' }}>PaisaPilot Assistant</div>
             <div style={{ fontSize: '0.72rem', color: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-emerald)' }} />
               PostgreSQL Checkpointed Memory Active
@@ -639,7 +639,7 @@ export const AIAssistant: React.FC<{ onDataChanged?: () => void }> = ({ onDataCh
               <span />
               <span />
             </div>
-            AI Expense Tracker reasoning with LangGraph & verifying database records...
+            PaisaPilot reasoning with LangGraph & verifying database records...
           </div>
         )}
         <div ref={messagesEndRef} />

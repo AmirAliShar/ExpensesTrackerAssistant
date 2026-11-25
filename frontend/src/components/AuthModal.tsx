@@ -97,7 +97,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, oauthError }) =
             {isRegister ? 'Create Account' : 'Welcome Back'}
           </h2>
           <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: '6px' }}>
-            AI Expense Tracker & Personal Finance Assistant
+            PaisaPilot & Personal Finance Assistant
           </p>
         </div>
 

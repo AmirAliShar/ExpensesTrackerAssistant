@@ -1,4 +1,4 @@
-// Centralized API Client & Types for AI Expense Tracker — Agentic Personal Finance Assistant
+// Centralized API Client & Types for PaisaPilot — Agentic Personal Finance Assistant
 
 export interface User {
   id: number;
@@ -325,6 +325,10 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(g),
     });
+  }
+
+  async deleteGoal(id: number): Promise<void> {
+    await this.request<void>(`/api/goals/${id}`, { method: 'DELETE' });
   }
 
   // --- Long-Term Memory API ---

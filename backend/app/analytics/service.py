@@ -11,6 +11,40 @@ PALETTE_COLORS = [
     "#D946EF", "#EF4444"
 ]
 
+
+def budget_usage_percentage(spent: Decimal, limit_value: Decimal) -> float:
+    """Return the shared monthly budget utilization percentage safely."""
+    if limit_value <= Decimal("0.00"):
+        return 0.0
+    return round(float(spent / limit_value * Decimal("100")), 1)
+
+
+def calculate_monthly_budget_usage(db: Session, user_id: int, month: str) -> List[Dict[str, Any]]:
+    """Aggregate a user's budgets and actual expenses for exactly one month."""
+    budgets = db.query(Budget).filter(
+        Budget.user_id == user_id,
+        Budget.month == month,
+    ).all()
+    expenses = db.query(Transaction).filter(
+        Transaction.user_id == user_id,
+        Transaction.type == "expense",
+        cast(Transaction.date, String).like(f"{month}%"),
+    ).all()
+
+    total_spent = sum((tx.amount for tx in expenses), Decimal("0.00"))
+    by_category: Dict[str, Decimal] = {}
+    for tx in expenses:
+        key = (tx.category or "").strip().casefold()
+        by_category[key] = by_category.get(key, Decimal("0.00")) + tx.amount
+
+    result = []
+    for budget in budgets:
+        limit_value = budget.monthly_limit or Decimal("0.00")
+        spent = total_spent if budget.category.strip().casefold() == "overall" else by_category.get(budget.category.strip().casefold(), Decimal("0.00"))
+        utilization = budget_usage_percentage(spent, limit_value)
+        result.append({"budget": budget, "spent": spent, "utilization_percentage": utilization})
+    return result
+
 def calculate_analytics_summary(
     db: Session,
     user_id: int = 1,
@@ -157,30 +191,23 @@ def calculate_daily_briefing(db: Session, user_id: int) -> Dict[str, Any]:
         Transaction.type == "expense",
         cast(Transaction.date, String).like(f"{month}%"),
     ).all()
-    budgets = db.query(Budget).filter(
-        Budget.user_id == user_id,
-        Budget.month == month,
-    ).all()
+    budget_usage = calculate_monthly_budget_usage(db, user_id, month)
     goals = db.query(SavingsGoal).filter(SavingsGoal.user_id == user_id).all()
 
     yesterday_total = sum((t.amount for t in yesterday_expenses), Decimal("0.00"))
     month_total = sum((t.amount for t in month_expenses), Decimal("0.00"))
 
     total_limit = sum(
-        (b.monthly_limit for b in budgets if b.category.lower() == "overall"),
+        (item["budget"].monthly_limit for item in budget_usage if item["budget"].category.strip().casefold() == "overall"),
         Decimal("0.00"),
     )
     remaining_budget = total_limit - month_total if total_limit > Decimal("0.00") else None
 
     alerts = []
-    for budget in budgets:
-        spent = month_total if budget.category.lower() == "overall" else sum(
-            (t.amount for t in month_expenses if t.category.title() == budget.category.title()),
-            Decimal("0.00"),
-        )
-        limit_value = budget.monthly_limit
-        if limit_value > Decimal("0.00"):
-            utilization = spent / limit_value
+    for item in budget_usage:
+        budget = item["budget"]
+        utilization = Decimal(str(item["utilization_percentage"])) / Decimal("100")
+        if budget.monthly_limit > Decimal("0.00"):
             if utilization >= Decimal("1"):
                 alerts.append(f"{budget.category} budget is fully utilized or exceeded.")
             elif utilization >= Decimal("0.80"):
